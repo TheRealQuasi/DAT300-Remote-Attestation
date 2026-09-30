@@ -1,16 +1,18 @@
 /*
- * ra_ftpm_ca.c - simple remote-attestation relay for OP-TEE's fTPM.
+ * ra_ftpm_ca.c - remote-attestation relay (attester) for OP-TEE's fTPM.
  *
- * The CA only passes things along:
- *   1. connect to the verifier and receive its nonce
- *   2. ask the fTPM for a quote (PCRs 0-7 + the nonce, signed by the AK)
- *   3. send the AK public key, the quote and the signature back
- *   4. print the verifier's answer
+ * Connects to the verifier ONCE and stays connected. It then waits for
+ * commands. Each time the verifier sends an attest command with a nonce:
+ *   1. ask the fTPM for a quote (PCRs 0-7 + the nonce, signed by the AK)
+ *   2. send the AK public key, the quote and the signature back
+ *   3. print the verifier's answer
+ *   4. go back to waiting
+ * If the connection is lost, it reconnects automatically.
  *
  * All checking is done by the verifier.
  *
  * Network messages are simply [4-byte big-endian length][data]:
- *   verifier -> CA : nonce
+ *   verifier -> CA : 'A' + nonce         (command: attest with this nonce)
  *   CA -> verifier : AK public key, quote, signature   (TPM wire format)
  *   verifier -> CA : verdict text
  *
@@ -30,6 +32,8 @@
 #include <tss2/tss2_rc.h>
 #include <tss2/tss2_tctildr.h>
 
+#define CMD_ATTEST 'A'
+
 static void check(TSS2_RC rc, const char *what)
 {
 	if (rc != TSS2_RC_SUCCESS) {
@@ -40,46 +44,43 @@ static void check(TSS2_RC rc, const char *what)
 
 /* ---------------- network: [length][data] ---------------- */
 
-static void send_msg(int fd, const void *data, uint32_t len)
+/* Returns 0 on success, -1 if the connection is gone. */
+static int send_msg(int fd, const void *data, uint32_t len)
 {
 	uint32_t be = htonl(len);
 
-	if (send(fd, &be, 4, 0) != 4 ||
-	    send(fd, data, len, 0) != (ssize_t)len) {
-		perror("send");
-		exit(1);
-	}
+	/* MSG_NOSIGNAL: don't crash if the verifier has gone away */
+	if (send(fd, &be, 4, MSG_NOSIGNAL) != 4 ||
+	    send(fd, data, len, MSG_NOSIGNAL) != (ssize_t)len)
+		return -1;
+	return 0;
 }
 
-static uint32_t recv_msg(int fd, uint8_t *buf, uint32_t max)
+/* Returns the number of bytes received, or -1 if the connection is gone. */
+static int recv_msg(int fd, uint8_t *buf, uint32_t max)
 {
 	uint32_t be, len;
 
-	if (recv(fd, &be, 4, MSG_WAITALL) != 4) {
-		fprintf(stderr, "verifier closed the connection\n");
-		exit(1);
-	}
+	if (recv(fd, &be, 4, MSG_WAITALL) != 4)
+		return -1;
 	len = ntohl(be);
-	if (len > max || recv(fd, buf, len, MSG_WAITALL) != (ssize_t)len) {
-		fprintf(stderr, "bad message from verifier\n");
-		exit(1);
-	}
-	return len;
+	if (len > max || recv(fd, buf, len, MSG_WAITALL) != (ssize_t)len)
+		return -1;
+	return (int)len;
 }
 
+/* Returns the connection, or -1 if the verifier can't be reached. */
 static int connect_to(const char *host, const char *port)
 {
 	struct addrinfo hints = { .ai_socktype = SOCK_STREAM }, *ai;
 	int fd;
 
-	if (getaddrinfo(host, port, &hints, &ai) != 0) {
-		fprintf(stderr, "cannot resolve %s\n", host);
-		exit(1);
-	}
+	if (getaddrinfo(host, port, &hints, &ai) != 0)
+		return -1;
 	fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-	if (fd < 0 || connect(fd, ai->ai_addr, ai->ai_addrlen) != 0) {
-		perror("connect");
-		exit(1);
+	if (fd >= 0 && connect(fd, ai->ai_addr, ai->ai_addrlen) != 0) {
+		close(fd);
+		fd = -1;
 	}
 	freeaddrinfo(ai);
 	return fd;
@@ -93,13 +94,8 @@ int main(int argc, char *argv[])
 	ESYS_CONTEXT *esys = NULL;
 	ESYS_TR ak = ESYS_TR_NONE;
 	TPM2B_PUBLIC *ak_pub = NULL;
-	TPM2B_ATTEST *quote = NULL;
-	TPMT_SIGNATURE *sig = NULL;
-	TPM2B_DATA nonce = { 0 };
-	uint8_t ak_buf[sizeof(TPM2B_PUBLIC)], sig_buf[sizeof(TPMT_SIGNATURE)];
-	size_t ak_len = 0, sig_len = 0;
-	char verdict[256];
-	int fd;
+	uint8_t ak_buf[sizeof(TPM2B_PUBLIC)];
+	size_t ak_len = 0;
 
 	/*
 	 * The AK: an ECC P-256 signing key. "Restricted" means the fTPM will
@@ -145,48 +141,88 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	/* 1. Get the nonce from the verifier. */
-	fd = connect_to(argv[1], argv[2]);
-	nonce.size = recv_msg(fd, nonce.buffer, sizeof(nonce.buffer));
-	printf("Got %u-byte nonce from verifier\n", nonce.size);
-
-	/* 2. Ask the fTPM for a quote. */
+	/* Open the fTPM and create the AK once, at start-up. */
 	check(Tss2_TctiLdr_Initialize("device:/dev/tpmrm0", &tcti), "open TPM");
 	check(Esys_Initialize(&esys, tcti, NULL), "Esys_Initialize");
-
 	check(Esys_CreatePrimary(esys, ESYS_TR_RH_ENDORSEMENT,
 				 ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
 				 &sensitive, &ak_template, &outside, &no_pcrs,
 				 &ak, &ak_pub, NULL, NULL, NULL),
 	      "create AK");
-
-	check(Esys_Quote(esys, ak, ESYS_TR_PASSWORD, ESYS_TR_NONE,
-			 ESYS_TR_NONE, &nonce, &scheme, &pcrs,
-			 &quote, &sig),
-	      "quote");
-	printf("fTPM signed a quote over PCRs 0-7\n");
-
-	/* Turn the key and signature into bytes (TPM wire format). */
 	check(Tss2_MU_TPM2B_PUBLIC_Marshal(ak_pub, ak_buf, sizeof(ak_buf),
 					   &ak_len), "encode AK");
-	check(Tss2_MU_TPMT_SIGNATURE_Marshal(sig, sig_buf, sizeof(sig_buf),
-					     &sig_len), "encode signature");
+	printf("fTPM ready, attestation key created\n");
 
-	/* 3. Send everything back. */
-	send_msg(fd, ak_buf, ak_len);
-	send_msg(fd, quote->attestationData, quote->size);
-	send_msg(fd, sig_buf, sig_len);
+	/* Outer loop: (re)connect to the verifier. */
+	for (;;) {
+		int fd = connect_to(argv[1], argv[2]);
 
-	/* 4. Print the verdict. */
-	verdict[recv_msg(fd, (uint8_t *)verdict, sizeof(verdict) - 1)] = '\0';
-	printf("Verifier says: %s\n", verdict);
+		if (fd < 0) {
+			printf("Verifier not reachable, retrying in 3 s...\n");
+			sleep(3);
+			continue;
+		}
+		printf("Connected to verifier, waiting for commands\n");
 
-	Esys_FlushContext(esys, ak);
-	Esys_Free(ak_pub);
-	Esys_Free(quote);
-	Esys_Free(sig);
-	Esys_Finalize(&esys);
-	Tss2_TctiLdr_Finalize(&tcti);
-	close(fd);
-	return 0;
+		/* Inner loop: wait for a command, handle it, repeat. */
+		for (;;) {
+			uint8_t msg[1 + sizeof(((TPM2B_DATA *)0)->buffer)];
+			TPM2B_DATA nonce = { 0 };
+			TPM2B_ATTEST *quote = NULL;
+			TPMT_SIGNATURE *sig = NULL;
+			uint8_t sig_buf[sizeof(TPMT_SIGNATURE)];
+			size_t sig_len = 0;
+			char verdict[256];
+			int len, vlen;
+
+			/* 1. Wait for the next command (blocks here). */
+			len = recv_msg(fd, msg, sizeof(msg));
+			if (len < 0)
+				break;                  /* connection lost */
+			if (len < 2 || msg[0] != CMD_ATTEST) {
+				printf("Ignoring unknown command\n");
+				continue;
+			}
+
+			/* The rest of the message is the nonce. */
+			nonce.size = (UINT16)(len - 1);
+			memcpy(nonce.buffer, msg + 1, nonce.size);
+			printf("\nAttest command, %u-byte nonce\n", nonce.size);
+
+			/* 2. Ask the fTPM for a quote over PCRs 0-7 + nonce. */
+			check(Esys_Quote(esys, ak, ESYS_TR_PASSWORD,
+					 ESYS_TR_NONE, ESYS_TR_NONE, &nonce,
+					 &scheme, &pcrs, &quote, &sig),
+			      "quote");
+			check(Tss2_MU_TPMT_SIGNATURE_Marshal(sig, sig_buf,
+							     sizeof(sig_buf),
+							     &sig_len),
+			      "encode signature");
+			printf("fTPM signed a quote over PCRs 0-7\n");
+
+			/* 3. Send AK, quote and signature back. */
+			if (send_msg(fd, ak_buf, ak_len) < 0 ||
+			    send_msg(fd, quote->attestationData,
+				     quote->size) < 0 ||
+			    send_msg(fd, sig_buf, sig_len) < 0) {
+				Esys_Free(quote);
+				Esys_Free(sig);
+				break;                  /* connection lost */
+			}
+			Esys_Free(quote);
+			Esys_Free(sig);
+
+			/* 4. Print the verdict. */
+			vlen = recv_msg(fd, (uint8_t *)verdict,
+					sizeof(verdict) - 1);
+			if (vlen < 0)
+				break;                  /* connection lost */
+			verdict[vlen] = '\0';
+			printf("Verifier says: %s\n", verdict);
+		}
+
+		close(fd);
+		printf("Connection lost, reconnecting in 3 s...\n");
+		sleep(3);
+	}
 }

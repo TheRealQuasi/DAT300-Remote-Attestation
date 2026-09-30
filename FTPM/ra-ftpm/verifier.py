@@ -2,14 +2,15 @@
 """
 verifier.py - remote-attestation verifier for ra_ftpm_ca (runs on Ubuntu).
 
-    python3 verifier.py --enroll    # first time: trust this device
-    python3 verifier.py             # after that: check it
+    python3 verifier.py
 
-For each device that connects:
-  1. send a fresh random nonce
-  2. receive AK public key, quote and signature
-  3. check: signature valid, nonce matches, AK and PCR digest
-     match what was saved at enrollment
+Waits for the attester to connect. The attester stays connected; you
+then type commands here:
+
+    enroll   send a nonce, check the quote, and trust this device
+             (saves its AK and PCR digest to enrolled_device.json)
+    attest   send a fresh nonce, check the quote against the enrollment
+    quit     stop the verifier
 
 Needs: sudo apt install python3-cryptography
 """
@@ -26,6 +27,8 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
+CMD_ATTEST = b"A"
+
 
 # ------------------------------------------------ network: [length][data]
 def send_msg(sock, data):
@@ -37,7 +40,7 @@ def recv_exact(sock, n):
     while len(buf) < n:
         chunk = sock.recv(n - len(buf))
         if not chunk:
-            raise ConnectionError("device closed the connection")
+            raise ConnectionError("attester closed the connection")
         buf += chunk
     return buf
 
@@ -103,9 +106,11 @@ def sig_to_der(blob):
 
 
 # ----------------------------------------------------------- checking
-def check_device(conn, args):
+def attest(conn, state_file, enroll):
+    """Send one attest command with a fresh nonce and check the answer."""
     nonce = secrets.token_bytes(32)
-    send_msg(conn, nonce)
+    send_msg(conn, CMD_ATTEST + nonce)
+    print(f"  sent nonce {nonce.hex()[:16]}...")
 
     ak_blob = recv_msg(conn)
     quote = recv_msg(conn)
@@ -123,14 +128,14 @@ def check_device(conn, args):
     if q_nonce != nonce:
         return "FAIL: wrong nonce (replayed quote?)"
 
-    if args.enroll:
-        with open(args.state, "w") as f:
+    if enroll:
+        with open(state_file, "w") as f:
             json.dump({"ak": ak_blob.hex(), "pcr_digest": pcr_digest.hex()}, f)
         return "ENROLLED"
 
-    if not os.path.exists(args.state):
-        return "FAIL: not enrolled yet (run with --enroll)"
-    with open(args.state) as f:
+    if not os.path.exists(state_file):
+        return "FAIL: not enrolled yet (type 'enroll' first)"
+    with open(state_file) as f:
         known = json.load(f)
 
     # Is it the device we know, running the software we expect?
@@ -145,28 +150,35 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=5000)
     ap.add_argument("--state", default="enrolled_device.json")
-    ap.add_argument("--enroll", action="store_true")
     args = ap.parse_args()
 
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("0.0.0.0", args.port))
     srv.listen(1)
-    print(f"Verifier listening on port {args.port}"
-          + (" (enroll mode)" if args.enroll else ""))
 
     while True:
+        print(f"Waiting for the attester on port {args.port}...")
         conn, addr = srv.accept()
+        print(f"Attester connected from {addr[0]}")
+        conn.settimeout(120)   # max wait for an answer from the fTPM
+
         with conn:
-            try:
-                conn.settimeout(120)
-                result = check_device(conn, args)
-                send_msg(conn, result.encode())
-            except Exception as e:
-                result = f"ERROR: {e}"
-            print(f"{addr[0]}: {result}")
-        if args.enroll:
-            break
+            while True:
+                cmd = input("Command [enroll / attest / quit]: ").strip()
+                if cmd == "quit":
+                    return
+                if cmd not in ("enroll", "attest"):
+                    continue
+                try:
+                    result = attest(conn, args.state, cmd == "enroll")
+                    send_msg(conn, result.encode())
+                    print(f"  -> {result}")
+                except (ConnectionError, OSError) as e:
+                    print(f"  -> connection lost: {e}")
+                    break          # go back and wait for a reconnect
+                except ValueError as e:
+                    print(f"  -> ERROR: {e}")
 
 
 if __name__ == "__main__":
