@@ -3,8 +3,7 @@
 set -e
 cd "$(dirname "$0")"
 
-FLAGS="CFG_ATTESTATION_PTA=y CFG_ATTESTATION_PTA_KEY_SIZE=2048 \
-MEASURED_BOOT_FTPM=y BR2_PACKAGE_TPM2_TSS=y QEMU_VIRTFS_ENABLE=y"
+FLAGS="MEASURED_BOOT_FTPM=y BR2_PACKAGE_TPM2_TSS=y QEMU_VIRTFS_ENABLE=y"
 
 tmux kill-session -t optee 2>/dev/null || true
 tmux new-session -d -s optee './soc_term.py 54320'                       # Linux console

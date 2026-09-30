@@ -1,29 +1,19 @@
 #!/bin/bash
-# build.sh - full OP-TEE rebuild with every flag ra_demo needs.
-#
-# Run this from ~/optee/build/ (or wherever your OP-TEE build directory
-# is) AFTER copying ra_demo/ into optee_examples/.
-#
-# Usage:
-#   ./build.sh          # normal build
-#   ./build.sh clean     # force a clean rebuild of the examples package
-#                         # (use this if ra_demo doesn't show up after a
-#                         # normal build - see README Troubleshooting)
-
+# build.sh - builds BOTH ra-pta and ra-ftpm. Run from ~/optee/build/
 set -e
 cd "$(dirname "$0")"
 
-BUILD_FLAGS="CFG_ATTESTATION_PTA=y CFG_ATTESTATION_PTA_KEY_SIZE=2048 QEMU_VIRTFS_ENABLE=y"
+# Buildroot can't handle spaces in PATH (WSL adds Windows folders like "Program Files")
+export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '[[:space:]]' | paste -sd:)
 
-if [ "$1" = "clean" ]; then
-	echo ">>> Forcing a clean rebuild of optee_examples_ext (stale cache workaround)"
-	make optee_examples_ext-dirclean
-fi
+FLAGS="CFG_ATTESTATION_PTA=y CFG_ATTESTATION_PTA_KEY_SIZE=2048 \
+MEASURED_BOOT_FTPM=y BR2_PACKAGE_TPM2_TSS=y QEMU_VIRTFS_ENABLE=y"
 
-echo ">>> Building with: $BUILD_FLAGS"
-make -j"$(nproc)" $BUILD_FLAGS
+# Let optee_examples use the tpm2-tss library (only added once)
+MK=br-ext/package/optee_examples_ext/optee_examples_ext.mk
+grep -q tpm2-tss $MK || sed -i '/^OPTEE_EXAMPLES_EXT_DEPENDENCIES/ s/$/ tpm2-tss/' $MK
 
-echo ""
-echo ">>> Done. Verify with:"
-echo "    grep -i 'ra_demo\|optee_example_ra_demo' build.log 2>/dev/null || true"
-echo "    (or just boot with ./start-optee.sh and run: which optee_example_ra_demo)"
+# Always rebuild the examples so both demos are up to date
+make optee_examples_ext-dirclean || true
+
+make -j"$(nproc)" $FLAGS

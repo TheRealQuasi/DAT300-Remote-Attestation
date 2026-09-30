@@ -1,4 +1,4 @@
-project (optee_example_ra_demo C)
+project (optee_example_ra_pta C)
 
 set (SRC host/main.c)
 
