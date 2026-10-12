@@ -36,6 +36,7 @@ import os
 import secrets
 import socket
 import struct
+import time
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
@@ -204,6 +205,13 @@ def main():
     ap.add_argument("--file", action="append", default=[],
                     metavar="PATH",
                     help="file the attester must hash (repeatable)")
+    ap.add_argument("--auto", action="store_true",
+                help="benchmark: send 'attest' automatically, nonstop")
+    ap.add_argument("--no-auto-enroll", dest="auto_enroll",
+                    action="store_false",
+                    help="in --auto, do NOT send the automatic enroll "
+                         "(every logged request is an attest)")
+
     args = ap.parse_args()
     files = args.file
 
@@ -218,9 +226,18 @@ def main():
         print(f"Attester connected from {addr[0]}")
         conn.settimeout(120)   # max wait for an answer from the fTPM
 
+        # In --auto, the first request of each run enrolls (unless disabled),
+        # so there is no need to enroll by hand before benchmarking.
+        need_enroll = args.auto and args.auto_enroll
+
         with conn:
             while True:
-                cmd = input("Command [enroll / attest / quit]: ").strip()
+                if args.auto:
+                    time.sleep(0.2)          # small gap between requests
+                    cmd = "enroll" if need_enroll else "attest"
+                    need_enroll = False
+                else:
+                    cmd = input("Command [enroll / attest / quit]: ").strip()
                 if cmd == "quit":
                     return
                 if cmd not in ("enroll", "attest"):
