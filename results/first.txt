@@ -1,0 +1,26 @@
+runs analysed: 10 (warm-up 0 discarded per run)
+
+run1       T_TA             n=10    min=1404 ms  p50=1440 ms  mean=1485 ms  p95=1596 ms  max=1596 ms  sd=74
+           U(pooled)=0.5277   (1555/2947 ticks)
+run2       T_TA             n=10    min=1430 ms  p50=1455 ms  mean=1492 ms  p95=1605 ms  max=1605 ms  sd=66.1
+           U(pooled)=0.5327   (1581/2968 ticks)
+run3       T_TA             n=10    min=1375 ms  p50=1436 ms  mean=1471 ms  p95=1561 ms  max=1561 ms  sd=66.3
+           U(pooled)=0.5304   (1552/2926 ticks)
+run4       T_TA             n=10    min=1388 ms  p50=1450 ms  mean=1460 ms  p95=1542 ms  max=1542 ms  sd=56.6
+           U(pooled)=0.5279   (1534/2906 ticks)
+run5       T_TA             n=10    min=1382 ms  p50=1449 ms  mean=1470 ms  p95=1574 ms  max=1574 ms  sd=73.2
+           U(pooled)=0.5125   (1499/2925 ticks)
+run6       T_TA             n=10    min=1393 ms  p50=1436 ms  mean=1477 ms  p95=1563 ms  max=1563 ms  sd=71
+           U(pooled)=0.5308   (1559/2937 ticks)
+run7       T_TA             n=10    min=1395 ms  p50=1443 ms  mean=1474 ms  p95=1580 ms  max=1580 ms  sd=73.9
+           U(pooled)=0.5298   (1557/2939 ticks)
+run8       T_TA             n=10    min=1397 ms  p50=1442 ms  mean=1475 ms  p95=1547 ms  max=1547 ms  sd=58
+           U(pooled)=0.5633   (1651/2931 ticks)
+run9       T_TA             n=10    min=1398 ms  p50=1435 ms  mean=1474 ms  p95=1569 ms  max=1569 ms  sd=66.3
+           U(pooled)=0.5397   (1583/2933 ticks)
+run10      T_TA             n=10    min=1402 ms  p50=1464 ms  mean=1478 ms  p95=1567 ms  max=1567 ms  sd=61.6
+           U(pooled)=0.5326   (1569/2946 ticks)
+
+------------------------------------------------------------
+T_TA (all runs)  n=100   min=1375 ms  p50=1455 ms  mean=1476 ms  p95=1568 ms  max=1605 ms  sd=64.4
+U pooled over all runs: 0.5327  (15640/29358 ticks)

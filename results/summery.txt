@@ -1,0 +1,10 @@
+runs analysed: 2 (warm-up 0 discarded per run)
+
+run1       T_TA             n=5     min=1373 ms  p50=1523 ms  mean=1495 ms  p95=1545 ms  max=1545 ms  sd=69.9
+           U(pooled)=0.5256   (779/1482 ticks)
+run2       T_TA             n=5     min=1417 ms  p50=1517 ms  mean=1502 ms  p95=1629 ms  max=1629 ms  sd=87.4
+           U(pooled)=0.5502   (822/1494 ticks)
+
+------------------------------------------------------------
+T_TA (all runs)  n=10    min=1373 ms  p50=1517 ms  mean=1499 ms  p95=1629 ms  max=1629 ms  sd=74.7
+U pooled over all runs: 0.5380  (1601/2976 ticks)
