@@ -11,12 +11,20 @@ if [ ! -d "$OPTEE/build" ] || [ ! -d "$OPTEE/optee_examples" ]; then
 	exit 1
 fi
 
-# DEPLOY FTPM
+
 # build and start scripts -> ~/optee/build
 cp "$REPO/build.sh" "$REPO/start-optee.sh" "$OPTEE/build/"
 chmod +x "$OPTEE/build/build.sh" "$OPTEE/build/start-optee.sh"
 echo "build.sh, start-optee.sh  		-> $OPTEE/build/"
 
+# DEPLOY PTA
+# PTA (built as an optee_example) -> ~/optee/optee_examples/ra-pta
+# the old copy is removed first so deleted/renamed files don't linger
+rm -rf "$OPTEE/optee_examples/ra-pta"
+cp -r "$REPO/PTA/ra-pta" "$OPTEE/optee_examples/"
+echo "PTA/ra-pta               		-> $OPTEE/optee_examples/ra-pta/"
+
+# DEPLOY FTPM
 # CA (built as an optee_example) -> ~/optee/optee_examples/ra-ftpm
 # the old copy is removed first so deleted/renamed files don't linger
 rm -rf "$OPTEE/optee_examples/ra-ftpm"
