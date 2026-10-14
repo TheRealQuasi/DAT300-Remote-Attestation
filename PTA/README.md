@@ -15,96 +15,77 @@ world, and verifies the result offline.
 
 ## Repo contents
 
-```text
-PTA/
-├── ra-pta/
-│   ├── CMakeLists.txt
-│   ├── verifier.py                 # host-side challenge + evidence verifier
-│   ├── host/main.c                 # normal-world client application
-│   ├── ta/ra_demo_ta.c             # TA forwarding the nonce to Attestation PTA
-│   └── tests/test_verifier_replay.py
-├── pta-build.sh
-├── pta-start.sh
-├── PTA_SETUP_AND_VERIFICATION.md
-└── PTA_CODE_EXPLAINED.md
+```
+.
+├── README.md                    (this file)
+├── SETUP_AND_VERIFICATION.md    Full setup + how to run + verify + troubleshoot
+├── CODE_EXPLAINED.md            File-by-file explanation of how it works
+├── start-optee.sh               Boots QEMU + both consoles, one command
+├── build.sh                     Rebuilds with all required flags, one command
+└── ra_demo/                     The actual example - copy this into optee_examples/
+    ├── CMakeLists.txt           Registers the CA with the build (see CODE_EXPLAINED)
+    ├── verifier.py              Offline verifier, runs on the host
+    ├── host/
+    │   └── main.c               CA (client app)
+    └── ta/
+        ├── Makefile
+        ├── sub.mk
+        ├── ra_demo_ta.c         TA (trusted app)
+        └── include/
+            ├── ra_demo_ta.h     Shared UUID/command constants
+            └── user_ta_header_defines.h
 ```
 
-## Quick start — with verifier-issued, one-use challenges
+## Quick start
 
-Assumes you already have `~/optee` set up. See
-[`PTA_SETUP_AND_VERIFICATION.md`](PTA_SETUP_AND_VERIFICATION.md) for the
-full build and boot instructions.
+Assumes you already have `~/optee` set up and built at least once (see
+`SETUP_AND_VERIFICATION.md` §2 if not).
 
 ```bash
-# 1. From the root of the uploaded RA/ repository:
-cp -r PTA/ra-pta ~/optee/optee_examples/ra-pta
-cp PTA/pta-build.sh ~/optee/build/pta-build.sh
-cp PTA/pta-start.sh ~/optee/build/start-optee.sh
-chmod +x ~/optee/build/pta-build.sh ~/optee/build/start-optee.sh
-# 2. Build and boot:
-cd ~/optee/build && ./pta-build.sh && ./start-optee.sh
-# Log in to the QEMU guest as root.
+# 1. Clone this repo
+git clone <this-repo-url> optee-ra-demo
+cd optee-ra-demo
 
-# 2. Inside the QEMU guest:
+# 2. Install into your OP-TEE tree
+cp -r ra_demo ~/optee/optee_examples/
+cp start-optee.sh build.sh ~/optee/build/
+chmod +x ~/optee/build/start-optee.sh ~/optee/build/build.sh
+
+# 3. Build (bakes in all 3 required flags - see below for why they matter)
+cd ~/optee/build
+./build.sh
+
+# 4. Boot
+./start-optee.sh
+# log in as: root  (blank password)
+
+# 5. Inside the guest:
 mkdir -p /mnt/host
 mount -t 9p -o trans=virtio host /mnt/host
-optee_example_ra_pta pubkey /mnt/host
-```
+optee_example_ra_demo pubkey
+optee_example_ra_demo attest "test-$(date +%s)"
 
-On the **trusted host**, issue a fresh challenge. Keep this verifier database
-on the host's local filesystem, never in `/mnt/host` or any guest-writable
-share:
-
-```bash
-VERIFIER=~/optee/optee_examples/ra-pta/verifier.py  # adjust if installed elsewhere
-CHALLENGE=$(python3 "$VERIFIER" --issue-challenge)
-printf 'Copy this challenge into the QEMU guest: %s\n' "$CHALLENGE"
-```
-
-Copy the printed 64-character token into the QEMU guest:
-
-```sh
-optee_example_ra_pta attest 'PASTE_CHALLENGE_HERE' /mnt/host
-```
-
-Back on the host, verify using the **same** challenge variable from the issuing
-shell (do not reconstruct it from the guest-written `nonce.bin`):
-
-```bash
+# 6. Back on the host, in a different terminal:
 cd ~/optee
-python3 "$VERIFIER" --challenge "$CHALLENGE" \
-    --exp pubkey_exp.bin --mod pubkey_mod.bin --evidence evidence.bin
+pip install cryptography --break-system-packages
+python3 optee_examples/ra_demo/verifier.py \
+    --exp pubkey_exp.bin --mod pubkey_mod.bin \
+    --evidence evidence.bin --nonce nonce.bin
+# expect: RA RESULT: PASS
 ```
 
-A successful response prints `RA RESULT: PASS`. That challenge is now consumed;
-running the verifier again with the same challenge and evidence must fail. A
-new challenge is required for each attestation. The database defaults to
-`~/.local/state/optee-ra-pta/challenges.sqlite3`; override it with
-`--challenge-db /trusted/local/path/challenges.sqlite3` if needed.
-
-### Run the regression tests (no QEMU required)
-
-From the repository root:
-
-```bash
-python3 -m pip install cryptography
-python3 PTA/ra-pta/tests/test_verifier_replay.py
-```
-
-These tests use a temporary synthetic RSA key to exercise the verifier's
-protocol logic. They test fresh-response acceptance, exact replay rejection,
-stale-evidence rejection against a new challenge, and evidence-tampering
-rejection. Follow the QEMU procedure above as well to validate evidence from
-the real OP-TEE Attestation PTA.
+Full explanation of every step, plus a troubleshooting table covering
+every failure mode we actually hit while building this, is in
+[`SETUP_AND_VERIFICATION.md`](SETUP_AND_VERIFICATION.md).
 
 ## The one thing to remember
 
-Every build touching this project needs all three of these flags, or
-something silently breaks on the next boot:
+Every `make` command touching this project needs all three of these
+flags, every time, or something silently breaks on the next boot:
 
 ```
 CFG_ATTESTATION_PTA=y CFG_ATTESTATION_PTA_KEY_SIZE=2048 QEMU_VIRTFS_ENABLE=y
 ```
 
-The `pta-build.sh` and `start-optee.sh` wrappers apply these flags; use them
-instead of raw `make` commands.
+`build.sh` and `start-optee.sh` already bake these in — use them instead
+of raw `make` commands and you won't need to think about this.

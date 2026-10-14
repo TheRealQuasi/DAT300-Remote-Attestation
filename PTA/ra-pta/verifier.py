@@ -1,221 +1,81 @@
 #!/usr/bin/env python3
-"""Verifier for the OP-TEE Attestation PTA demo, with replay protection.
+"""Interactive network verifier for the OP-TEE Attestation PTA demo.
 
-Issue a challenge on the verifier (normal-world host):
-    CHALLENGE=$(python3 verifier.py --issue-challenge)
-
-Pass that exact string to the attester in QEMU:
-    optee_example_ra_pta attest "$CHALLENGE" /mnt/host
-
-Then verify on the verifier host, keeping the challenge database local/private:
-    python3 verifier.py --challenge "$CHALLENGE" --exp pubkey_exp.bin \
-        --mod pubkey_mod.bin --evidence evidence.bin
-
-The `nonce.bin` file emitted by the guest is intentionally NOT trusted or read.
-The verifier checks its independently-issued outstanding challenge and consumes
-it after a cryptographically valid response. Challenges expire after 300 seconds
-by default. This is a demo protocol; production deployments need authenticated
-transport, access-controlled persistent state, rate limiting, and key lifecycle
-management appropriate to their threat model.
+Run on the host: python3 verifier.py [--port 5000] [--state enrolled_pta.json]
+The guest CA connects and remains connected. At the prompt use enroll, attest,
+quit. Protocol: server sends one command byte (E/A) plus 64 ASCII hex challenge
+bytes; client replies with u16 exponent length, u16 modulus length, u32 evidence
+length, then exponent, modulus, evidence. Lengths are network byte order.
 """
-import argparse
-import hashlib
-import os
-import re
-import secrets
-import sqlite3
-import sys
-import time
-from pathlib import Path
-
-try:
-    from cryptography.hazmat.primitives.asymmetric import rsa, padding, utils
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.backends import default_backend
-    from cryptography.exceptions import InvalidSignature
-except ImportError:
-    sys.exit("Missing dependency. Run: pip install cryptography")
+import argparse, hashlib, json, os, secrets, socket, struct, time
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric import rsa, padding, utils
+from cryptography.hazmat.primitives import hashes
 
 DIGEST_LEN = 32
-CHALLENGE_RE = re.compile(r"^[0-9a-f]{64}$")  # secrets.token_hex(32), ASCII nonce
-DEFAULT_DB = "~/.local/state/optee-ra-pta/challenges.sqlite3"
 
+def recv_exact(sock, n):
+    chunks = bytearray()
+    while len(chunks) < n:
+        b = sock.recv(n-len(chunks))
+        if not b: raise ConnectionError('attester disconnected')
+        chunks.extend(b)
+    return bytes(chunks)
 
-def load_pubkey(exp_path, mod_path):
-    with open(exp_path, "rb") as f:
-        e_raw = f.read()
-    with open(mod_path, "rb") as f:
-        n_raw = f.read()
-    if not e_raw or not n_raw:
-        raise ValueError("Public-key exponent/modulus file is empty")
-    e = int.from_bytes(e_raw, "big")
-    n = int.from_bytes(n_raw, "big")
-    return rsa.RSAPublicNumbers(e, n).public_key(default_backend())
+def recv_response(conn):
+    elen, nlen, slen = struct.unpack('!HHI', recv_exact(conn, 8))
+    if not (1 <= elen <= 8 and 128 <= nlen <= 1024 and DIGEST_LEN < slen <= 2048):
+        raise ValueError('invalid response lengths')
+    return (recv_exact(conn, elen), recv_exact(conn, nlen), recv_exact(conn, slen))
 
-
-def connect_db(db_arg):
-    path = Path(db_arg).expanduser()
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    # The challenge database must live on the verifier, not in the QEMU 9p share.
-    conn = sqlite3.connect(str(path,))
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS challenges (
-            nonce_hash TEXT PRIMARY KEY,
-            created_at INTEGER NOT NULL,
-            expires_at INTEGER NOT NULL,
-            consumed_at INTEGER
-        )
-    """)
-    conn.commit()
+def verify_response(challenge, exp_b, mod_b, evidence):
+    if len(evidence) <= DIGEST_LEN: raise ValueError('evidence too short')
+    pub = rsa.RSAPublicNumbers(int.from_bytes(exp_b, 'big'), int.from_bytes(mod_b, 'big')).public_key()
+    digest, sig = evidence[:DIGEST_LEN], evidence[DIGEST_LEN:]
+    msg = hashlib.sha256(challenge.encode('ascii') + digest).digest()
     try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-    return conn
-
-
-def issue_challenge(db_arg, ttl_seconds):
-    if ttl_seconds < 1:
-        raise ValueError("--challenge-ttl must be at least 1 second")
-    challenge = secrets.token_hex(32)
-    now = int(time.time())
-    nonce_hash = hashlib.sha256(challenge.encode("ascii")).hexdigest()
-    conn = connect_db(db_arg)
-    try:
-        with conn:
-            conn.execute(
-                "INSERT INTO challenges(nonce_hash, created_at, expires_at, consumed_at) "
-                "VALUES (?, ?, ?, NULL)",
-                (nonce_hash, now, now + ttl_seconds),
-            )
-    finally:
-        conn.close()
-    # stdout contains only the challenge so shell command substitution is safe.
-    print(challenge)
-
-
-def check_challenge_is_pending(conn, challenge):
-    nonce_hash = hashlib.sha256(challenge.encode("ascii")).hexdigest()
-    row = conn.execute(
-        "SELECT expires_at, consumed_at FROM challenges WHERE nonce_hash = ?",
-        (nonce_hash,),
-    ).fetchone()
-    if row is None:
-        return False, "Challenge was not issued by this verifier"
-    expires_at, consumed_at = row
-    if consumed_at is not None:
-        return False, "Challenge has already been consumed (replay rejected)"
-    if int(time.time()) > expires_at:
-        return False, "Challenge has expired (stale response rejected)"
-    return True, nonce_hash
-
-
-def consume_challenge(conn, nonce_hash):
-    """Atomically consume a challenge; concurrent duplicate verifies cannot both win."""
-    now = int(time.time())
-    with conn:
-        cursor = conn.execute(
-            "UPDATE challenges SET consumed_at = ? "
-            "WHERE nonce_hash = ? AND consumed_at IS NULL AND expires_at >= ?",
-            (now, nonce_hash, now),
-        )
-    return cursor.rowcount == 1
-
+        pub.verify(sig, msg, padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=DIGEST_LEN), utils.Prehashed(hashes.SHA256()))
+    except InvalidSignature:
+        return None
+    return {'exp': exp_b.hex(), 'mod': mod_b.hex(), 'digest': digest.hex()}
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--exp", default="pubkey_exp.bin", help="PTA RSA public exponent file")
-    ap.add_argument("--mod", default="pubkey_mod.bin", help="PTA RSA public modulus file")
-    ap.add_argument("--evidence", default="evidence.bin")
-    ap.add_argument("--challenge", help="the current verifier-issued 64-character challenge")
-    ap.add_argument("--challenge-db", default=DEFAULT_DB,
-                    help="verifier-local challenge state (never put this in /mnt/host)")
-    ap.add_argument("--issue-challenge", action="store_true",
-                    help="issue a fresh challenge and print it, then exit")
-    ap.add_argument("--challenge-ttl", type=int, default=300,
-                    help="challenge lifetime in seconds for --issue-challenge (default: 300)")
-    ap.add_argument("--expected-digest",
-                    help="hex SHA-256 digest of a known-good TA build")
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--port', type=int, default=5000)
+    ap.add_argument('--state', default='enrolled_pta.json')
     args = ap.parse_args()
-
-    try:
-        if args.issue_challenge:
-            if args.challenge:
-                ap.error("--issue-challenge and --challenge cannot be combined")
-            issue_challenge(args.challenge_db, args.challenge_ttl)
-            return 0
-
-        if not args.challenge:
-            ap.error("--challenge is required; do not trust the guest-written nonce.bin")
-        if not CHALLENGE_RE.fullmatch(args.challenge):
-            ap.error("--challenge must be exactly 64 lowercase hexadecimal characters")
-
-        conn = connect_db(args.challenge_db)
-        try:
-            pending, challenge_info = check_challenge_is_pending(conn, args.challenge)
-            if not pending:
-                print(f"Freshness check: NO ({challenge_info})")
-                print("\nRA RESULT: FAIL")
-                return 1
-            nonce_hash = challenge_info
-
-            pubkey = load_pubkey(args.exp, args.mod)
-            with open(args.evidence, "rb") as f:
-                evidence = f.read()
-            if len(evidence) <= DIGEST_LEN:
-                print(f"Evidence too short ({len(evidence)} bytes)")
-                print("\nRA RESULT: FAIL")
-                return 1
-
-            digest = evidence[:DIGEST_LEN]
-            signature = evidence[DIGEST_LEN:]
-            # The PTA signs SHA256(nonce || digest). The nonce is the verifier's
-            # pending challenge, NOT the independently replaceable nonce.bin file.
-            message = hashlib.sha256(args.challenge.encode("ascii") + digest).digest()
-            try:
-                pubkey.verify(
-                    signature,
-                    message,
-                    padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=DIGEST_LEN),
-                    utils.Prehashed(hashes.SHA256()),
-                )
-                sig_ok = True
-            except (InvalidSignature, ValueError):
-                sig_ok = False
-
-            # Consume after a valid signature even if the optional known-good
-            # digest check fails: this valid challenge response must not be reusable.
-            consumed = consume_challenge(conn, nonce_hash) if sig_ok else False
-            freshness_ok = sig_ok and consumed
-
-            print(f"Challenge:            {args.challenge}")
-            print(f"TA digest (hex):      {digest.hex()}")
-            print(f"Signature length:     {len(signature)} bytes")
-            print(f"Signature valid:      {'YES' if sig_ok else 'NO'}")
-            print(f"Challenge consumed:   {'YES' if consumed else 'NO'}")
-            print(f"Freshness check:      {'PASS' if freshness_ok else 'FAIL'}")
-
-            digest_ok = True
-            if args.expected_digest:
+    srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(('0.0.0.0', args.port)); srv.listen(1)
+    print(f'Waiting for OP-TEE PTA attester on port {args.port}...')
+    while True:
+        conn, addr = srv.accept(); print(f'Attester connected from {addr[0]}')
+        with conn:
+            conn.settimeout(120)
+            while True:
+                cmd = input('Command [enroll / attest / quit]: ').strip().lower()
+                if cmd == 'quit': return
+                if cmd not in ('enroll', 'attest'): continue
+                if cmd == 'attest' and not os.path.exists(args.state):
+                    print('  -> FAIL: not enrolled yet (type enroll first)'); continue
+                challenge = secrets.token_hex(32)
                 try:
-                    expected = bytes.fromhex(args.expected_digest)
-                except ValueError:
-                    ap.error("--expected-digest must be valid hexadecimal")
-                digest_ok = len(expected) == DIGEST_LEN and digest == expected
-                print(f"Digest matches known-good build: {'YES' if digest_ok else 'NO'}")
-            else:
-                print("(no --expected-digest: TA measurement allow-list check skipped)")
-
-            result = freshness_ok and digest_ok
-            print(f"\nRA RESULT: {'PASS' if result else 'FAIL'}")
-            return 0 if result else 1
-        finally:
-            conn.close()
-    except (OSError, sqlite3.Error, ValueError) as exc:
-        print(f"Verifier error: {exc}", file=sys.stderr)
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+                    conn.sendall((b'E' if cmd == 'enroll' else b'A') + challenge.encode('ascii'))
+                    exp_b, mod_b, evidence = recv_response(conn)
+                    result = verify_response(challenge, exp_b, mod_b, evidence)
+                    if result is None:
+                        print('  -> FAIL: invalid signature'); continue
+                    if cmd == 'enroll':
+                        state = {**result, 'enrolled_at': int(time.time())}
+                        with open(args.state, 'w') as f: json.dump(state, f, indent=2)
+                        os.chmod(args.state, 0o600)
+                        print('  -> ENROLLED (PTA public key and TA digest pinned)')
+                    else:
+                        with open(args.state) as f: known = json.load(f)
+                        if result['exp'] != known['exp'] or result['mod'] != known['mod']:
+                            print('  -> FAIL: PTA public key changed')
+                        elif result['digest'] != known['digest']:
+                            print('  -> FAIL: TA digest changed since enrollment')
+                        else: print('  -> TRUSTED')
+                except (ConnectionError, OSError, ValueError) as e:
+                    print(f'  -> connection/protocol error: {e}'); break
+if __name__ == '__main__': main()

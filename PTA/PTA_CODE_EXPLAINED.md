@@ -11,7 +11,7 @@ into `tee.elf`, rather than a regular TA loaded from a `.ta` file). It
 lives at `core/pta/attestation.c` in the `optee_os` source tree and
 already implements exactly the primitive a remote-attestation scheme
 needs: generate a keypair that never leaves secure world, and sign a
-measurement of a TA's code together with a verifier-issued challenge token.
+measurement of a TA's code together with a caller-supplied nonce.
 
 This project's job is *not* to reimplement that — it's to build a thin
 CA/TA pair that calls it correctly, plus an offline verifier to check
@@ -38,7 +38,7 @@ Included by **both** the TA and the CA. Two separate concerns live here:
 `TA_RA_DEMO_UUID` is our TA's identity — every OP-TEE TA is addressed by
 UUID rather than by name. `TA_RA_CMD_GET_EVIDENCE` is the (single)
 command our TA exposes to callers: "give me signed evidence for
-yourself, bound to this challenge."
+yourself, bound to this nonce."
 
 **2. A local mirror of two constants from optee_os's real
 `pta_attestation.h`:**
@@ -113,7 +113,7 @@ res = TEE_InvokeTACommand(sess, 0, PTA_ATTESTATION_GET_TA_SHDR_DIGEST,
 
 Three parameters get passed to the PTA:
 1. **Our own UUID** — tells the PTA which TA's memory to measure (itself).
-2. **The nonce** — forwarded straight through from the challenge token the CA sent us.
+2. **The nonce** — forwarded straight through from whatever the CA sent us.
 3. **An output buffer** — reused directly from the CA's own output
    buffer (`params[1]`), so the PTA writes its result straight into
    memory the CA already provided — no extra copying needed.
@@ -150,7 +150,7 @@ us (success or a specific error code) straight back to the CA.
 ### `host/main.c` — the Client Application
 
 Normal-world code, runs as an ordinary Linux process
-(`optee_example_ra_pta`), talks to secure world via `libteec`
+(`optee_example_ra_demo`), talks to secure world via `libteec`
 (`tee_client_api.h`).
 
 **`cmd_pubkey()`** — opens a session **directly** to the Attestation
@@ -179,12 +179,10 @@ guest and host.
 
 ---
 
-### `verifier.py` — the verifier with one-use freshness challenges
+### `verifier.py` — the offline verifier
 
 Runs on the **host**, entirely separate from OP-TEE/QEMU — plain Python
-using `cryptography` and SQLite. It issues random 256-bit challenge tokens, stores
-only their hashes in a verifier-local database, enforces a 300-second expiry,
-and consumes each challenge after the first cryptographically valid response.
+using the `cryptography` library.
 
 **Loading the public key:**
 
@@ -213,7 +211,7 @@ Matches exactly what the PTA wrote: digest first, signature after.
 **The one non-obvious part — `Prehashed`:**
 
 ```python
-message = hashlib.sha256(challenge.encode("ascii") + digest).digest()
+message = hashlib.sha256(nonce + digest).digest()
 
 pubkey.verify(
     signature,
@@ -226,7 +224,7 @@ pubkey.verify(
 OP-TEE's `TEE_AsymmetricSignDigest` — which the PTA uses internally —
 signs a value that's *already been hashed*, without hashing it again
 (hence "SignDigest" rather than just "Sign"). We replicate that exact
-computation on the verifier side: hash `current challenge || digest` ourselves, then
+computation on the verifier side: hash `nonce || digest` ourselves, then
 tell the `cryptography` library "this value is already a hash, don't
 hash it again before verifying" via `utils.Prehashed`. Omitting
 `Prehashed` here is a subtle bug that would make every signature appear
@@ -244,10 +242,9 @@ result = sig_ok and digest_ok
 ```
 
 This separation matters for interpreting results correctly: `sig_ok`
-tells you the report's signature is authentic (made with the PTA key);
-`freshness_ok` additionally means the verifier-issued challenge was outstanding,
-not expired, and successfully consumed exactly once. `digest_ok` tells you the
-*code being reported on* matches what you expected. A tampered TA still produces a validly-signed report
+tells you the report is authentic (really came from this TEE's PTA
+key); `digest_ok` tells you the *code being reported on* matches what
+you expected. A tampered TA still produces a validly-signed report
 (the PTA doesn't know or care what "correct" code looks like) — it's
 the digest comparison, done entirely on the verifier side against a
 value you supply, that catches the tampering. See §8 of the setup guide
@@ -295,7 +292,7 @@ loop — CMake never looks at it, so the CA silently never gets built
 even though the TA (built via a completely separate, non-CMake hook
 that scans for `*/ta/Makefile`) builds fine. This mismatch — TA builds,
 CA doesn't, no error anywhere — was the single most time-consuming bug
-in developing this demo. `optee_example_ra_pta` as the project name
+in developing this demo. `optee_example_ra_demo` as the project name
 matches the naming convention every other example in this tree uses
 (`optee_example_secure_storage`, `optee_example_sign_verify`, etc.).
 
@@ -309,7 +306,7 @@ If you're comparing this against a textbook remote-attestation diagram
 | Role | In this demo |
 |---|---|
 | **Attester** | The whole QEMU guest — specifically, `ra_demo` TA + the Attestation PTA together |
-| **Relying Party** | No network service; challenge is copied manually to the QEMU guest and verifier state remains on the host |
+| **Relying Party** | Cut out — the CA plays both "request attestation" and "relay evidence" itself |
 | **Verifier** | `verifier.py`, run manually on the host |
 | **Provisioner** | Cut out — `verifier.py` just trusts whatever pubkey file you hand it, with no endorsement/certificate chain back to a manufacturing-time root of trust |
 

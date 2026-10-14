@@ -20,8 +20,7 @@
  * TA_RA_CMD_GET_EVIDENCE - ask the TA to produce remote-attestation
  * evidence for itself, covering a caller-supplied nonce.
  *
- * [in]  memref[0]  Verifier challenge token (64 lowercase hex ASCII bytes
- *                   in this demo; the TA forwards it without modification)
+ * [in]  memref[0]  Nonce (opaque bytes, caller-chosen, any length > 0)
  * [out] memref[1]  Evidence buffer. First 32 bytes = SHA-256 digest of
  *                   this TA's own signed header (code + rodata
  *                   measurement, taken from the TA's shdr::hash at load
