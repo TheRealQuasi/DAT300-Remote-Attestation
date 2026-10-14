@@ -44,11 +44,6 @@
 #include "bench.h"
 static struct bench b;
 
-// bench_start(&b);   // just before the first fTPM command
-// /* fTPM call(s) */
-// bench_stop(&b);    // just after the last response
-// bench_log(&b);     // one CSV row per request
-
 #define CMD_ATTEST  'A'
 #define MAX_CMD     4096                  /* max size of an attest command */
 #define NUM_PCRS    9                     /* PCRs 0-7 and 16 */
