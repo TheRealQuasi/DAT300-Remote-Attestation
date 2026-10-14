@@ -80,12 +80,26 @@ static void cmd_pubkey(const char *outdir)
 	TEEC_FinalizeContext(&ctx);
 }
 
+static int is_challenge_token(const char *s)
+{
+	size_t i;
+
+	if (strlen(s) != 64)
+		return 0;
+	for (i = 0; i < 64; i++) {
+		if (!((s[i] >= '0' && s[i] <= '9') ||
+		      (s[i] >= 'a' && s[i] <= 'f')))
+			return 0;
+	}
+	return 1;
+}
+
 /*
- * Request attestation evidence, bound to a caller-chosen nonce, for our
- * own TA. This goes through ra_demo TA (not the PTA directly), since only
- * the TA itself is allowed to ask the PTA to measure it.
+ * Request attestation evidence bound to a verifier-issued challenge token.
+ * This goes through ra_demo TA (not the PTA directly), since only the TA
+ * itself is allowed to ask the PTA to measure it.
  */
-static void cmd_attest(const char *nonce_str, const char *outdir)
+static void cmd_attest(const char *challenge_str, const char *outdir)
 {
 	TEEC_Context ctx;
 	TEEC_Session sess;
@@ -95,6 +109,9 @@ static void cmd_attest(const char *nonce_str, const char *outdir)
 	uint32_t err_origin;
 	uint8_t evidence[EVIDENCE_MAX] = { 0 };
 	char path[512];
+
+	if (!is_challenge_token(challenge_str))
+		errx(1, "challenge must be 64 lowercase hex characters; issue one with verifier.py --issue-challenge");
 
 	res = TEEC_InitializeContext(NULL, &ctx);
 	if (res != TEEC_SUCCESS)
@@ -110,8 +127,8 @@ static void cmd_attest(const char *nonce_str, const char *outdir)
 	op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT,
 					  TEEC_MEMREF_TEMP_OUTPUT,
 					  TEEC_NONE, TEEC_NONE);
-	op.params[0].tmpref.buffer = (void *)nonce_str;
-	op.params[0].tmpref.size = strlen(nonce_str);
+	op.params[0].tmpref.buffer = (void *)challenge_str;
+	op.params[0].tmpref.size = strlen(challenge_str);
 	op.params[1].tmpref.buffer = evidence;
 	op.params[1].tmpref.size = sizeof(evidence);
 
@@ -126,7 +143,7 @@ static void cmd_attest(const char *nonce_str, const char *outdir)
 	snprintf(path, sizeof(path), "%s/evidence.bin", outdir);
 	save_to_file(path, evidence, op.params[1].tmpref.size);
 	snprintf(path, sizeof(path), "%s/nonce.bin", outdir);
-	save_to_file(path, nonce_str, strlen(nonce_str));
+	save_to_file(path, challenge_str, strlen(challenge_str));
 
 	TEEC_CloseSession(&sess);
 	TEEC_FinalizeContext(&ctx);
@@ -138,8 +155,8 @@ static void usage(const char *prog)
 		"Usage:\n"
 		"  %s pubkey [outdir]\n"
 		"      Fetch the Attestation PTA's public key once.\n"
-		"  %s attest <nonce-string> [outdir]\n"
-		"      Request signed evidence for this TA, bound to <nonce-string>.\n"
+		"  %s attest <challenge-token> [outdir]\n"
+		"      Request signed evidence bound to a 64-character verifier challenge.\n"
 		"\n"
 		"outdir defaults to /mnt/host (the 9p share to your Ubuntu host),\n"
 		"so the verifier script can read the files without extra copying.\n",
