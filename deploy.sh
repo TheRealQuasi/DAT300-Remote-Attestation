@@ -11,7 +11,6 @@ if [ ! -d "$OPTEE/build" ] || [ ! -d "$OPTEE/optee_examples" ]; then
 	exit 1
 fi
 
-
 # build and start scripts -> ~/optee/build
 cp "$REPO/build.sh" "$REPO/start-optee.sh" "$OPTEE/build/"
 chmod +x "$OPTEE/build/build.sh" "$OPTEE/build/start-optee.sh"
@@ -37,9 +36,8 @@ cp "$REPO/FTPM/ftpm-benchmark/ftpm-benchmark.sh" "$OPTEE/benchmark/"
 chmod +x "$OPTEE/benchmark/ftpm-benchmark.sh"
 echo "FTPM/benchmark/ftpm-benchmark.sh  	-> $OPTEE/benchmark/"
 
-# later: TPM and PTA
+# later: TPM
 # cp -r "$REPO/TPM/..." "$OPTEE/..."
-# cp -r "$REPO/PTA/..." "$OPTEE/..."
 
 echo
 ls -R "$OPTEE/optee_examples/ra-ftpm"
