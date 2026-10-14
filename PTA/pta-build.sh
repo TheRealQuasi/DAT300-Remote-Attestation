@@ -6,7 +6,7 @@
 #
 # Usage:
 #   ./build.sh          # normal build
-#   ./build.sh clean     # force a clean rebuild of the examples package
+#   ./pta-build.sh clean     # force a clean rebuild of the examples package
 #                         # (use this if ra_demo doesn't show up after a
 #                         # normal build - see README Troubleshooting)
 
@@ -25,5 +25,5 @@ make -j"$(nproc)" $BUILD_FLAGS
 
 echo ""
 echo ">>> Done. Verify with:"
-echo "    grep -i 'ra_demo\|optee_example_ra_demo' build.log 2>/dev/null || true"
-echo "    (or just boot with ./start-optee.sh and run: which optee_example_ra_demo)"
+echo "    grep -i 'ra_demo\|optee_example_ra_pta' build.log 2>/dev/null || true"
+echo "    (or just boot with ./start-optee.sh and run: which optee_example_ra_pta)"

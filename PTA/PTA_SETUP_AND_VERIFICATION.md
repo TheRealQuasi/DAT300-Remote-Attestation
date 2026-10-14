@@ -22,25 +22,25 @@ implementation).
  Verifier (you, on the host)              Attester (QEMU guest)
  ┌─────────────────┐                      ┌───────────────────────────┐
  │                  │  (0) fetch pubkey    │  Normal World              │
- │                  │◄─────────────────────┤  optee_example_ra_demo CA  │
+ │                  │◄─────────────────────┤  optee_example_ra_pta CA  │
  │  verifier.py     │                      │                            │
- │                  │  (1) attest <nonce>  │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  │
- │                  │◄─────────────────────┤  Secure World              │
- │                  │                      │  ra_demo TA  ──► calls ──► │
- │  checks signature│                      │  Attestation PTA (built    │
- │  + digest         │                      │  into optee_os)            │
+ │ verifier issues  │  (1) attest <token> │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  │
+ │ one-use challenge│◄─────────────────────┤  Secure World              │
+ │ checks signature│                      │  ra_demo TA  ──► calls ──► │
+ │ + digest + state │                      │  Attestation PTA (built    │
+ │                  │                      │  into optee_os)            │
  └─────────────────┘                      └───────────────────────────┘
 ```
 
 Two commands, both run inside the QEMU guest:
 
-- **`optee_example_ra_demo pubkey`** — fetches the Attestation PTA's
+- **`optee_example_ra_pta pubkey`** — fetches the Attestation PTA's
   public RSA key directly (no TA mediation needed for this call).
   Saved as your trust anchor.
-- **`optee_example_ra_demo attest <nonce>`** — asks our custom `ra_demo`
-  TA to request signed evidence from the PTA for *itself*: a SHA-256
-  measurement of the TA's own code+rodata, signed together with your
-  nonce. The PTA's private key never leaves secure world.
+- **`optee_example_ra_pta attest <challenge-token>`** — asks our custom
+  `ra_demo` TA to request signed evidence from the PTA for *itself*: a SHA-256
+  measurement of the TA's own code+rodata, signed together with the verifier's
+  64-character challenge token. The PTA's private key never leaves secure world.
 
 Then, on your **host** machine (not the guest):
 
@@ -89,23 +89,22 @@ UUID if you fork this, the latter for `start-optee.sh`.)
 
 ## 3. Installing this package
 
-From the root of this repo:
+From the root of the uploaded `RA/` repository:
 
 ```bash
-cp -r ra_demo ~/optee/optee_examples/
-cp start-optee.sh build.sh ~/optee/build/
-chmod +x ~/optee/build/start-optee.sh ~/optee/build/build.sh
+cp -r PTA/ra-pta ~/optee/optee_examples/ra-pta
+cp PTA/pta-build.sh ~/optee/build/pta-build.sh
+cp PTA/pta-start.sh ~/optee/build/start-optee.sh
+chmod +x ~/optee/build/pta-build.sh ~/optee/build/start-optee.sh
 ```
 
-That's it for installation — the build system auto-discovers any
-subdirectory of `optee_examples/` that has its own `CMakeLists.txt`
-(which `ra_demo/` does), and the TA gets picked up separately via a
-build-system hook that scans for `*/ta/Makefile`.
+The examples build auto-discovers subdirectories with a `CMakeLists.txt`.
+This project's CMake target installs the client as
+`/usr/bin/optee_example_ra_pta`; the TA is built from `ra-pta/ta/Makefile`.
 
-**If you want a different TA UUID** (e.g. to avoid any chance of
-collision with other custom TAs in your project), generate one and
-update it in two places — see the comment at the top of
-`ra_demo/ta/include/ra_demo_ta.h`.
+**If you want a different TA UUID**, update the UUID in
+`PTA/ra-pta/ta/include/ra_demo_ta.h` and the `BINARY` value in
+`PTA/ra-pta/ta/Makefile` so they match.
 
 ---
 
@@ -132,21 +131,19 @@ CFG_ATTESTATION_PTA=y CFG_ATTESTATION_PTA_KEY_SIZE=2048 QEMU_VIRTFS_ENABLE=y
   `/mnt/host` to actually work. Without this, mounting fails with
   `9pnet_virtio: no channels available for device host`.
 
-We've provided `build.sh` so you never have to type these by hand:
+The copied `pta-build.sh` applies the required flags automatically:
 
 ```bash
 cd ~/optee/build
-./build.sh
+./pta-build.sh
 ```
 
-If `ra_demo` doesn't show up after a build (check with
-`which optee_example_ra_demo` after booting — see below), the most
-likely cause is a **stale Buildroot package cache** from an earlier
-build that predates adding `ra_demo`. Force a clean rebuild of just that
-package:
+If `optee_example_ra_pta` doesn't show up after a build, the most
+likely cause is a **stale Buildroot package cache**. Force a clean rebuild
+of the examples package:
 
 ```bash
-./build.sh clean
+./pta-build.sh clean
 ```
 
 A full build takes a while — this is normal, don't interrupt it.
@@ -216,16 +213,16 @@ failed (this happens if `QEMU_VIRTFS_ENABLE=y` wasn't part of the build
 ### 6.2 Confirm the CA is present
 
 ```sh
-which optee_example_ra_demo
+which optee_example_ra_pta
 ```
 
-Should print `/usr/bin/optee_example_ra_demo`. If this is empty, the
+Should print `/usr/bin/optee_example_ra_pta`. If this is empty, the
 build didn't include it — see the Troubleshooting section.
 
 ### 6.3 Fetch the public key (once)
 
 ```sh
-optee_example_ra_demo pubkey
+optee_example_ra_pta pubkey
 ```
 
 Expected output:
@@ -242,58 +239,93 @@ Public key retrieved:
 (3-byte exponent = `0x010001` / 65537, the standard RSA public exponent.
 256-byte modulus = 2048-bit RSA, matching `CFG_ATTESTATION_PTA_KEY_SIZE`.)
 
-### 6.4 Request attestation evidence
+### 6.4 Issue a challenge and request evidence
 
-```sh
-optee_example_ra_demo attest "test-$(date +%s)"
+On the **trusted host**, issue a challenge before asking the guest to attest.
+The challenge database is verifier state: keep it outside `/mnt/host` and any
+guest-writable path.
+
+```bash
+VERIFIER=~/optee/optee_examples/ra-pta/verifier.py  # adjust to your install
+CHALLENGE=$(python3 "$VERIFIER" --issue-challenge)
+printf 'Challenge to copy into QEMU: %s\n' "$CHALLENGE"
 ```
 
-Expected output:
+Copy the 64-character challenge into the QEMU guest:
+
+```sh
+optee_example_ra_pta attest 'PASTE_CHALLENGE_HERE' /mnt/host
+```
+
+Expected output includes:
 
 ```
 Evidence retrieved: 288 bytes (32-byte digest + signature)
   wrote /mnt/host/evidence.bin (288 bytes)
-  wrote /mnt/host/nonce.bin (15 bytes)
+  wrote /mnt/host/nonce.bin (64 bytes)
 ```
 
-(288 bytes = 32-byte SHA-256 digest + 256-byte RSA signature.)
-
-You can run `attest` as many times as you like with different nonces —
-each run overwrites `evidence.bin`/`nonce.bin` with a fresh pair.
+The CA still writes `nonce.bin` for diagnostics/backwards inspection, but the
+hardened verifier deliberately does **not** read or trust it.
 
 ---
 
 ## 7. Verifying, on the host
 
-Switch to your **host** shell (not the guest) — a separate terminal, SSH
-session, or another tmux window entirely (this is not one of the three
-panes `start-optee.sh` created).
+Back in the **same host shell** that issued the challenge, verify the evidence
+against that exact challenge:
 
 ```bash
 cd ~/optee   # or wherever /mnt/host mapped to (see note in 6.1)
-pip install cryptography --break-system-packages   # first time only
-python3 optee_examples/ra_demo/verifier.py \
-    --exp pubkey_exp.bin --mod pubkey_mod.bin \
-    --evidence evidence.bin --nonce nonce.bin
+python3 "$VERIFIER" --challenge "$CHALLENGE" \
+    --exp pubkey_exp.bin --mod pubkey_mod.bin --evidence evidence.bin
 ```
 
-Expected output:
+The expected result is `RA RESULT: PASS`, with `Signature valid: YES`,
+`Challenge consumed: YES`, and `Freshness check: PASS`. The verifier stores
+only a hash of each issued challenge in its local SQLite database, expires
+challenges after 300 seconds by default, and consumes each challenge after a
+cryptographically valid response. Run `python3 "$VERIFIER" --help` for options.
 
+**Important:** a signature proves authenticity, not freshness on its own. The
+verifier now checks the signature over `SHA256(current_challenge || digest)`
+and independently checks that the challenge was issued, has not expired, and
+has not already been consumed. The challenge database must remain private to
+the verifier; protecting challenge state and the transport are part of the
+protocol's security boundary.
+
+### 7.1 Reproduce and reject replay attacks
+
+After one successful round, save the evidence on the host:
+
+```bash
+cp evidence.bin evidence-first.bin
 ```
-Nonce (raw):          b'test-1234567890'
-TA digest (hex):      f0607a82c8040f13623eb94e96cd096425b44fb21eb992880a07b9328a1648f3
-Signature length:     256 bytes
-Signature valid:      YES
-(no --expected-digest given - skipping code-integrity check, only signature authenticity was verified)
 
-RA RESULT: PASS
+**Exact replay:** run the verifier again with the already accepted challenge.
+This must fail because the challenge has been consumed:
+
+```bash
+python3 "$VERIFIER" --challenge "$CHALLENGE" \
+    --exp pubkey_exp.bin --mod pubkey_mod.bin --evidence evidence-first.bin
+# Expected: "Challenge has already been consumed" and RA RESULT: FAIL
 ```
 
-**PASS means:** the signature is a genuine RSASSA-PSS-SHA256 signature,
-produced by the Attestation PTA's private key (which never left secure
-world), over exactly `SHA256(your nonce || the TA's own code digest)`.
-Nobody forged this outside the TEE, and it's bound to your specific
-nonce (so it can't be replayed against a different challenge).
+**Stale evidence against a new challenge:** issue a new challenge, but first
+try verifying the saved response against it:
+
+```bash
+CHALLENGE2=$(python3 "$VERIFIER" --issue-challenge)
+python3 "$VERIFIER" --challenge "$CHALLENGE2" \
+    --exp pubkey_exp.bin --mod pubkey_mod.bin --evidence evidence-first.bin
+# Expected: Signature valid: NO; RA RESULT: FAIL
+```
+
+The invalid stale response does not consume `CHALLENGE2`. Copy `CHALLENGE2`
+into QEMU, request new evidence with `optee_example_ra_pta attest
+'PASTE_CHALLENGE2_HERE' /mnt/host`, then verify that new evidence against
+`CHALLENGE2`; it should pass and consume the challenge. In the commands above,
+exit status 1 is expected for the two deliberately rejected replay attempts.
 
 ---
 
@@ -304,29 +336,33 @@ the TA's code changes, even though the signature itself stays valid
 (because the PTA still faithfully signs whatever it's asked to sign —
 tamper *detection* is the verifier's job, not the PTA's).
 
-```bash
-# 1. Run the flow once as above, note the digest
-python3 optee_examples/ra_demo/verifier.py \
-    --exp pubkey_exp.bin --mod pubkey_mod.bin \
-    --evidence evidence.bin --nonce nonce.bin | grep digest
+During a successful verification, copy the reported `TA digest (hex)` value
+into a host-side file, one line only:
 
-# Save it
-echo "<paste the digest hex here>" > known_good_digest.txt
+```bash
+printf '%s\n' '<paste TA digest hex here>' > known_good_digest.txt
 ```
 
-Now modify the TA — anything, even a comment:
+Now make a source change that changes the compiled TA binary (a comment-only
+edit usually will not change the measurement), then rebuild and reboot QEMU:
 
 ```bash
-nano ~/optee/optee_examples/ra_demo/ta/ra_demo_ta.c
+nano ~/optee/optee_examples/ra-pta/ta/ra_demo_ta.c
+# From ~/optee/build: ./pta-build.sh
+# Reboot QEMU using ./start-optee.sh
 ```
 
-Rebuild, reboot, re-run `attest` with a fresh nonce (steps 4–6 above),
-then verify **against the original digest**:
+Issue a new challenge on the host, copy it into the guest, request new evidence,
+then verify **against the original digest**. Use the same host `CHALLENGE` for
+all steps in this single round:
 
 ```bash
-python3 optee_examples/ra_demo/verifier.py \
-    --exp pubkey_exp.bin --mod pubkey_mod.bin \
-    --evidence evidence.bin --nonce nonce.bin \
+CHALLENGE=$(python3 "$VERIFIER" --issue-challenge)
+printf 'Copy to QEMU: %s\n' "$CHALLENGE"
+# In QEMU: optee_example_ra_pta attest 'PASTE_CHALLENGE_HERE' /mnt/host
+# Back on the host:
+python3 "$VERIFIER" --challenge "$CHALLENGE" \
+    --exp pubkey_exp.bin --mod pubkey_mod.bin --evidence evidence.bin \
     --expected-digest "$(cat known_good_digest.txt)"
 ```
 
@@ -350,7 +386,7 @@ checks matter, and they're testing different things.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `which optee_example_ra_demo` returns nothing | Build didn't include it, likely a stale package cache | `./build.sh clean` then rebuild |
+| `which optee_example_ra_pta` returns nothing | Build didn't include it, likely a stale package cache | `./pta-build.sh clean` then rebuild |
 | `TEEC_OpenSession(attestation PTA) failed 0xffff0008` | `CFG_ATTESTATION_PTA` missing from the build that's currently running | Rebuild with all 3 flags together (§4), then **reboot QEMU** — the currently-running instance still has the old `tee.elf` |
 | `mount: mounting host on /mnt/host failed: No such file or directory` / `9pnet_virtio: no channels available` | `QEMU_VIRTFS_ENABLE` wasn't part of the build, or wasn't part of the **run** command | Rebuild AND make sure `start-optee.sh`/`run-only` also gets the flag — it's needed at both build time (compiles 9p support into QEMU) and run time (adds the actual `-fsdev` flags to the launch command) |
 | `ls /mnt/host` shows only a lone `README` | Mount silently failed, you're looking at a placeholder baked into the rootfs, not the real share | Re-check the mount command actually returned no error; re-verify `QEMU_VIRTFS_ENABLE=y` was really used |
@@ -363,15 +399,18 @@ checks matter, and they're testing different things.
 
 ## 10. Known simplifications vs. a full RA deployment
 
-- **No Relying Party, no live challenge/response.** The nonce is just a
-  CLI argument you pick, not something a server generates and tracks for
-  freshness/replay protection. A real deployment needs a nonce registry
-  (used-once enforcement) on the verifier side.
+- **No networked Relying Party / no authenticated transport.** This demo
+  manually copies verifier-issued challenges into QEMU instead of using a live
+  protocol over an authenticated channel. The verifier does track outstanding,
+  expiring, one-use challenges locally, but a production deployment still needs
+  a carefully designed authenticated transport and protected verifier state.
 - **No Provisioner, no certificate chain.** `verifier.py` trusts
   whatever `pubkey_*.bin` you hand it, with no endorsement chain back to
-  a hardware root or manufacturer CA. Fine for demonstrating the
-  mechanism; not sufficient for a real "unforgeable hardware-rooted
-  identity" claim.
+  a hardware root or manufacturer CA. Keep the public-key files in a trusted
+  location and pin/validate the key out of band; if an attacker can replace
+  both the key and evidence, signature verification alone can be bypassed.
+  Fine for demonstrating the mechanism; not sufficient for a real
+  "unforgeable hardware-rooted identity" claim.
 - **QEMU's hardware root isn't real.** OP-TEE's Hardware Unique Key
   (HUK) on the `virt` QEMU platform is a hardcoded placeholder value in
   source, not a real fused secret — every QEMU instance has the same
