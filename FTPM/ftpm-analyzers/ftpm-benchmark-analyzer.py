@@ -110,13 +110,6 @@ def collect(paths, warmup):
     return dict(per_run=per_run, ta=all_ta, cpu=all_cpu,
                 busy=busy_all, total=total_all, rss_peak=rss_peak)
 
-def ensure_dir(path):
-    """Create the parent directory of an output file if it doesn't exist."""
-    d = os.path.dirname(path)
-    if d:
-        os.makedirs(d, exist_ok=True)
-
-
 def delta_line(name, sec_vals, base_vals, unit):
     s = pct(sorted(sec_vals), 50)
     b = pct(sorted(base_vals), 50)
@@ -124,6 +117,12 @@ def delta_line(name, sec_vals, base_vals, unit):
     return (f"{name} baseline={b:.4g}{unit}  with-sec={s:.4g}{unit}  "
             f"delta={s - b:+.4g}{unit}{pctg}")
 
+def ensure_dir(path):
+    path = os.path.expanduser(path)
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    return path
 
 def make_plot(per_run, path):
     try:
