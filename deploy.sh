@@ -32,18 +32,23 @@ echo "FTPM/ra-ftpm              		-> $OPTEE/optee_examples/ra-ftpm/"
 
 # benchmark script -> ~/optee/benchmark  (= /mnt/host/benchmark inside QEMU)
 mkdir -p "$OPTEE/benchmark"
-cp "$REPO/FTPM/ftpm-analyzers/ftpm-benchmark.sh" "$OPTEE/benchmark/"
+cp "$REPO/FTPM/ftpm-shells/ftpm-benchmark.sh" "$OPTEE/benchmark/"
 chmod +x "$OPTEE/benchmark/ftpm-benchmark.sh"
-echo "FTPM/ftpm-analyzers/ftpm-benchmark.sh  	-> $OPTEE/benchmark/"
+echo "FTPM/ftpm-shells/ftpm-benchmark.sh  	-> $OPTEE/benchmark/"
 
 # DoS script -> ~/optee/dos  (= /mnt/host/dos inside QEMU)
 mkdir -p "$OPTEE/dos"
-cp "$REPO/FTPM/ftpm-analyzers/ftpm-dos.sh" "$OPTEE/dos/"
+cp "$REPO/FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos.sh" "$OPTEE/dos/"
+cp "$REPO/FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos-benchmark.sh" "$OPTEE/dos/"
 chmod +x "$OPTEE/dos/ftpm-dos.sh"
-echo "FTPM/ftpm-analyzers/ftpm-dos.sh  	-> $OPTEE/dos/"
+chmod +x "$OPTEE/dos/ftpm-dos-benchmark.sh"
+echo "FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos.sh  	-> $OPTEE/dos/"
+echo "FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos-benchmark.sh  	-> $OPTEE/dos/"
 
-# later: TPM
+# DEPLOY TPM
 # cp -r "$REPO/TPM/..." "$OPTEE/..."
 
+
+# TO PRINT THE FILES IN THE OPTEE TREE:
 # echo
 # ls -R "$OPTEE/optee_examples/ra-ftpm"

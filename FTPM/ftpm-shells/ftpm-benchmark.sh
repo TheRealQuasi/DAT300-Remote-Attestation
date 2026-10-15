@@ -34,4 +34,6 @@ for i in $(seq 1 "$RUNS"); do
 	BENCH_OUT="$OUT/run$i.csv" BENCH_REQUESTS="$REQ" "$CA" "$IP" "$PORT" > /dev/null
 	sleep 2
 done
-echo "done. On your PC: python3 analyzer.py ~/optee/benchmark/results/run*.csv"
+
+echo "done -> $OUT"
+echo "On your PC: python3 FTPM/ftpm-analyzers/ftpm-benchmark-analyzer.py"
