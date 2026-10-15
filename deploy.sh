@@ -14,48 +14,33 @@ fi
 # build and start scripts -> ~/optee/build
 cp "$REPO/build.sh" "$REPO/start-optee.sh" "$OPTEE/build/"
 chmod +x "$OPTEE/build/build.sh" "$OPTEE/build/start-optee.sh"
-echo "build.sh, start-optee.sh  					-> $OPTEE/build/"
+echo "build.sh, start-optee.sh  		-> $OPTEE/build/"
 
 # DEPLOY PTA
 # PTA (built as an optee_example) -> ~/optee/optee_examples/ra-pta
 # the old copy is removed first so deleted/renamed files don't linger
 rm -rf "$OPTEE/optee_examples/ra-pta"
 cp -r "$REPO/PTA/ra-pta" "$OPTEE/optee_examples/"
-echo "PTA/ra-pta               					-> $OPTEE/optee_examples/ra-pta/"
+echo "PTA/ra-pta               		-> $OPTEE/optee_examples/ra-pta/"
 
 # DEPLOY FTPM
 # CA (built as an optee_example) -> ~/optee/optee_examples/ra-ftpm
 # the old copy is removed first so deleted/renamed files don't linger
 rm -rf "$OPTEE/optee_examples/ra-ftpm"
 cp -r "$REPO/FTPM/ra-ftpm" "$OPTEE/optee_examples/"
-echo "FTPM/ra-ftpm              					-> $OPTEE/optee_examples/ra-ftpm/"
+echo "FTPM/ra-ftpm              		-> $OPTEE/optee_examples/ra-ftpm/"
 
 # benchmark script -> ~/optee/benchmark  (= /mnt/host/benchmark inside QEMU)
 mkdir -p "$OPTEE/benchmark"
 cp "$REPO/FTPM/ftpm-shells/ftpm-benchmark.sh" "$OPTEE/benchmark/"
 chmod +x "$OPTEE/benchmark/ftpm-benchmark.sh"
-echo "FTPM/ftpm-shells/ftpm-benchmark.sh  				-> $OPTEE/benchmark/"
+echo "FTPM/ftpm-shells/ftpm-benchmark.sh  	-> $OPTEE/benchmark/"
 
 # DoS script -> ~/optee/dos  (= /mnt/host/dos inside QEMU)
 mkdir -p "$OPTEE/dos"
-cp "$REPO/FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos-final.sh" "$OPTEE/dos/"
-cp "$REPO/FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos-prep.sh" "$OPTEE/dos/"
-cp "$REPO/FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos-sweep.sh" "$OPTEE/dos/"
-cp "$REPO/FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos.sh" "$OPTEE/dos/"
-cp "$REPO/FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos-load.sh" "$OPTEE/dos/"
-cp "$REPO/FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos-benchmark.sh" "$OPTEE/dos/"
-chmod +x "$OPTEE/dos/ftpm-dos-final.sh"
-chmod +x "$OPTEE/dos/ftpm-dos-prep.sh"
-chmod +x "$OPTEE/dos/ftpm-dos-sweep.sh"
+cp "$REPO/FTPM/ftpm-shells/ftpm-dos.sh" "$OPTEE/dos/"
 chmod +x "$OPTEE/dos/ftpm-dos.sh"
-chmod +x "$OPTEE/dos/ftpm-dos-benchmark.sh"
-chmod +x "$OPTEE/dos/ftpm-dos-load.sh"
-echo "FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos-final.sh		-> $OPTEE/dos/"
-echo "FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos-prep.sh		-> $OPTEE/dos/"
-echo "FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos-sweep.sh  		-> $OPTEE/dos/"
-echo "FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos.sh  			-> $OPTEE/dos/"
-echo "FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos-load.sh  		-> $OPTEE/dos/"
-echo "FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos-benchmark.sh  	-> $OPTEE/dos/"
+echo "FTPM/ftpm-shells/ftpm-dos.sh  		-> $OPTEE/dos/"
 
 # DEPLOY TPM
 # cp -r "$REPO/TPM/..." "$OPTEE/..."
