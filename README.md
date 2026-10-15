@@ -245,7 +245,7 @@ number of requests and writes one CSV per run to the results directory.
 **Back on your machine — analyse the results:**
 
 ```sh
-python3 FTPM/ftpm-benchmark/ftpm-benchmark-analyzer.py
+python3 FTPM/ftpm-analyzers/ftpm-benchmark-analyzer.py
 ```
 
 With no arguments it reads `~/optee/benchmark/results/run*.csv` and writes
@@ -253,7 +253,7 @@ With no arguments it reads `~/optee/benchmark/results/run*.csv` and writes
 no-security baseline, pass those runs with `--baseline`:
 
 ```sh
-python3 FTPM/ftpm-benchmark/ftpm-benchmark-analyzer.py \
+python3 FTPM/ftpm-analyzers/ftpm-benchmark-analyzer.py \
     sec/run*.csv --baseline base/run*.csv
 ```
 
@@ -313,13 +313,13 @@ With no arguments it connects to `10.0.2.2 5000`. Compile-time limits: up to
 ## File layout
 
 ```
-deploy.sh                          Copies CAs + scripts into the OP-TEE tree
-build.sh, start-optee.sh           Build and boot the OP-TEE QEMU device
-FTPM/ra-ftpm/main.c                CA / attester source (C, runs on the device)
-FTPM/ra-ftpm/verifier.py           Verifier (Python, runs on the trusted host)
-FTPM/ftpm-benchmark/bench.h        Per-request benchmark hooks for the CA
-FTPM/ftpm-benchmark/ftpm-benchmark.sh        Runs the benchmark inside QEMU
-FTPM/ftpm-benchmark/ftpm-benchmark-analyzer.py   Summarises + plots the results
-PTA/ra-pta/                        PTA-based attester variant
-enrolled_device.json               Written by the verifier on 'enroll'
+deploy.sh                                         Copies CAs + scripts into the OP-TEE tree
+build.sh, start-optee.sh                          Build and boot the OP-TEE QEMU device
+FTPM/ra-ftpm/host/main.c                          CA / attester source (C, runs on the device)
+FTPM/ra-ftpm/host/bench.h                    Per-request benchmark hooks for the CA
+FTPM/ra-ftpm/verifier.py                          Verifier (Python, runs on the trusted host)
+FTPM/ftpm-analyzers/ftpm-benchmark.sh             Runs the benchmark inside QEMU
+FTPM/ftpm-analyzers/ftpm-benchmark-analyzer.py    Summarises + plots the results
+PTA/ra-pta/                                       PTA-based attester variant
+enrolled_device.json                              Written by the verifier on 'enroll'
 ```

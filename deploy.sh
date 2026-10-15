@@ -32,12 +32,12 @@ echo "FTPM/ra-ftpm              		-> $OPTEE/optee_examples/ra-ftpm/"
 
 # benchmark script -> ~/optee/benchmark  (= /mnt/host/benchmark inside QEMU)
 mkdir -p "$OPTEE/benchmark"
-cp "$REPO/FTPM/ftpm-benchmark/ftpm-benchmark.sh" "$OPTEE/benchmark/"
+cp "$REPO/FTPM/ftpm-analyzers/ftpm-benchmark.sh" "$OPTEE/benchmark/"
 chmod +x "$OPTEE/benchmark/ftpm-benchmark.sh"
-echo "FTPM/benchmark/ftpm-benchmark.sh  	-> $OPTEE/benchmark/"
+echo "FTPM/ftpm-analyzers/ftpm-benchmark.sh  	-> $OPTEE/benchmark/"
 
 # later: TPM
 # cp -r "$REPO/TPM/..." "$OPTEE/..."
 
-echo
-ls -R "$OPTEE/optee_examples/ra-ftpm"
+# echo
+# ls -R "$OPTEE/optee_examples/ra-ftpm"
