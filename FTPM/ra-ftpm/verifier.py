@@ -44,11 +44,15 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
+PORT = 5000
+
 CMD_ATTEST = b"A"
 NUM_PCRS = 9          # PCRs 0-7 and 16, in that order
 
+# Used when they are not given on the command line.
 DOS_OUT_DIR = "~/optee/dos/results"
-
+DEFAULT_STATE_FILE = "enrolled_device.json"
+DEFAULT_PROTECTED_FILE = "/root/protected.txt"
 
 def expected_pcr16(nonce, ref_hashes):
     """The PCR 16 value the fTPM must produce if every file is unchanged."""
@@ -203,9 +207,9 @@ def attest(conn, state_file, enroll, paths):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=5000)
-    ap.add_argument("--state", default="enrolled_device.json")
-    ap.add_argument("--file", action="append", default=[],
+    ap.add_argument("--port", type=int, default=PORT)
+    ap.add_argument("--state", default=DEFAULT_STATE_FILE)
+    ap.add_argument("--file", action="append", default=[DEFAULT_PROTECTED_FILE],
                     metavar="PATH",
                     help="file the attester must hash (repeatable)")
 
@@ -221,6 +225,7 @@ def main():
     # For the DoS, log every request's verdict to a CSV file.
     ap.add_argument("--dos", action="store_true",
                     help="DoS test: log every request's verdict to a CSV file")
+                    
     ap.add_argument("--verdict-csv", metavar="FILE", default=DOS_OUT_DIR + "/verifier_load10.csv",
                     help="in --auto, log per-request pass/fail here")
     ap.add_argument("--count", type=int, default=0,

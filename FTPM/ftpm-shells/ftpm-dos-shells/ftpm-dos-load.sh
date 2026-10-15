@@ -38,8 +38,10 @@ worker() {
 cleanup() {
     echo
     echo "stopping $CONC worker(s)..."
+    # Kill the worker loop subshells, then the tool they spawn.
     kill $PIDS 2>/dev/null
-    wait 2>/dev/null
+    pkill -9 -P $$ 2>/dev/null       # any children of this script
+    pkill -9 -f "$TOOL" 2>/dev/null  # the in-flight tool, as a backstop
     exit 0
 }
 trap cleanup INT TERM

@@ -132,25 +132,38 @@ def merge_level(ca_paths, ver_paths, warmup):
     for p in ver_paths:
         ver += read_verifier(p)
 
+    # The CA logs one row per quote, and seq 0 is the ENROLL (a quote the
+    # verifier does not judge). Drop it so the CA's attests line up with the
+    # verifier's: CA attests become ca_attest[0..] = the verifier's seq 0..
+    # Any explicit ENROLLED verdict on the verifier side is dropped too.
+    ca_seqs = sorted(ca)
+    ca_attest = [ca[s] for s in ca_seqs[1:]] if ca_seqs else []   # drop enroll
+    ver_attest = [res for _, res in ver if res not in SKIP_TAGS]
+
+    # warmup now means: discard the first N *attests* from BOTH sides, so they
+    # stay aligned. The enroll is already gone above, separately.
+    if warmup > 0:
+        ca_attest = ca_attest[warmup:]
+        ver_attest = ver_attest[warmup:]
+
     completed_lat, denied = [], 0
 
-    if ver:
-        # Normal path: verifier is the authority on answered vs denied.
-        attests = [(seq, res) for seq, res in ver if res not in SKIP_TAGS]
-        attests = attests[warmup:] if 0 < warmup < len(attests) else \
-            ([] if warmup >= len(attests) and warmup else attests)
-        for seq, res in attests:
+    if ver_attest:
+        # Verifier is the authority on answered vs denied. For each attest in
+        # order, a TIMEOUT/LOST is a denial; otherwise it completed and takes
+        # the next CA attest latency (positional, since both are now aligned).
+        ci = 0
+        for res in ver_attest:
             if res in DENIED_TAGS:
                 denied += 1
-            elif seq in ca:
-                completed_lat.append(ca[seq])
+            elif ci < len(ca_attest):
+                completed_lat.append(ca_attest[ci])
+                ci += 1
             else:
-                denied += 1          # verifier ok-ish but CA never logged it
+                denied += 1          # verifier counted it but CA has no row
     else:
         # CA-only (no verifier file): latency only, availability unknown.
-        seqs = sorted(ca)
-        seqs = seqs[warmup:] if 0 < warmup < len(seqs) else seqs
-        completed_lat = [ca[s] for s in seqs]
+        completed_lat = ca_attest
         denied = None
 
     lat = sorted(completed_lat)
@@ -178,8 +191,8 @@ def summarise(levels, warmup):
 
 
 def format_text(rows, warmup):
-    lines = [f"load levels: {len(rows)} (warm-up {warmup} discarded per level)",
-             ""]
+    lines = [f"load levels: {len(rows)} (enroll dropped; warm-up {warmup} "
+             f"attests discarded per side)", ""]
     for s in rows:
         succ = f"{s['succ']:5.1f}%" if not math.isnan(s["succ"]) else "   -  "
         denied = f"{s['denied']:<3}" if s["denied_known"] else " ? "
@@ -265,8 +278,8 @@ def main():
     ap.add_argument("--verifier-glob", default=VERIFIER_GLOB,
                     help=f"verifier verdict files (default {VERIFIER_GLOB})")
     ap.add_argument("--warmup", type=int, default=0,
-                    help="discard the first N attests per level "
-                         "(use >=1 if level 0 auto-enrolls)")
+                    help="discard the first N *attests* from both CA and "
+                         "verifier (the enroll row is dropped automatically)")
     ap.add_argument("--out", default=OUT_DIR + "/dos-summary.txt",
                     help="also write the text summary here")
     ap.add_argument("--plot", default=OUT_DIR + "/dos-summary.png",

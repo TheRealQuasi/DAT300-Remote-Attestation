@@ -22,10 +22,12 @@ PORT=${4:-5000}
 LOAD_TOOL=${TOOL:-tpm2_pcrread}   # must match ftpm-dos-load.sh's tool
 
 cleanup() {
-    # Stop the load however it was started: the loader's own trap plus a
-    # pkill backstop, so no worker loop is left hammering the TPM.
+    # Stop the load: kill the loader AND its worker loops by name, not just
+    # the tpm2 tool (the while-loops would respawn it otherwise), then the
+    # tool itself as a backstop. -9 so nothing lingers on the TPM.
     [ -n "$LOAD_PID" ] && kill "$LOAD_PID" 2>/dev/null
-    pkill -f "$LOAD_TOOL" 2>/dev/null
+    pkill -9 -f ftpm-dos-load 2>/dev/null
+    pkill -9 -f "$LOAD_TOOL" 2>/dev/null
     wait 2>/dev/null
 }
 trap cleanup EXIT INT TERM
