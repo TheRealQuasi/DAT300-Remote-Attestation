@@ -232,6 +232,7 @@ def main():
     srv.listen(1)
 
     while True:
+        done = 0
         print(f"Waiting for the attester on port {args.port}...")
         conn, addr = srv.accept()
         print(f"Attester connected from {addr[0]}")
