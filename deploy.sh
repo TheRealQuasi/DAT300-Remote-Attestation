@@ -36,6 +36,12 @@ cp "$REPO/FTPM/ftpm-analyzers/ftpm-benchmark.sh" "$OPTEE/benchmark/"
 chmod +x "$OPTEE/benchmark/ftpm-benchmark.sh"
 echo "FTPM/ftpm-analyzers/ftpm-benchmark.sh  	-> $OPTEE/benchmark/"
 
+# DoS script -> ~/optee/dos  (= /mnt/host/dos inside QEMU)
+mkdir -p "$OPTEE/dos"
+cp "$REPO/FTPM/ftpm-analyzers/ftpm-dos.sh" "$OPTEE/dos/"
+chmod +x "$OPTEE/dos/ftpm-dos.sh"
+echo "FTPM/ftpm-analyzers/ftpm-dos.sh  	-> $OPTEE/dos/"
+
 # later: TPM
 # cp -r "$REPO/TPM/..." "$OPTEE/..."
 
