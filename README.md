@@ -123,27 +123,24 @@ verifier handles one attester at a time and returns to waiting on disconnect.
   sudo apt install python3-cryptography
   ```
 
-### Build the CA
+### Deploy
 
-The CA is packaged as an OP-TEE example, so it builds as part of the OP-TEE
-tree. Copy it in alongside the build scripts:
+`deploy.sh` copies everything into your OP-TEE tree so it builds as part of
+OP-TEE: the CAs into `~/optee/optee_examples/` (`ra-ftpm`, `ra-pta`), the
+`build.sh` / `start-optee.sh` helpers into `~/optee/build/`, and the benchmark
+script into `~`. Each CA's old copy is removed first so renamed or deleted
+files don't linger.
 
 ```sh
-# Copy the example into the OP-TEE examples tree
-cp -r FTPM/ra-ftpm ~/optee/optee_examples/
-ls -R ~/optee/optee_examples/ra-ftpm
-
-# Copy the build/run helper scripts into the build dir
-cp -r build.sh start-optee.sh ~/optee/build/
-ls ~/optee/build
+./deploy.sh
 ```
 
-Then build and boot the emulated device from `~/optee/build/`:
+Then build and boot the emulated device:
 
 ```sh
 cd ~/optee/build
-./build.sh
-./start-optee
+./build.sh            # only needed after changing a CA, TA, or the kernel
+./start-optee.sh
 ```
 
 This drops you into the OP-TEE QEMU environment. OP-TEE boots secure world
@@ -172,12 +169,14 @@ echo "Root access? Bold move." > /root/protected.txt
 python3 FTPM/ra-ftpm/verifier.py --file /root/protected.txt
 ```
 
-**3. Start the attester** in normal world, pointing at the host. Under QEMU the
-host is reachable at `10.0.2.2`:
+**3. Start the attester** in normal world:
 
 ```sh
-optee_example_ra_ftpm 10.0.2.2 5000 &
+optee_example_ra_ftpm
 ```
+
+It defaults to the verifier at `10.0.2.2 5000` (the host as seen from QEMU);
+pass `optee_example_ra_ftpm <verifier-ip> <port>` to override.
 
 **4. Enroll, then attest** from the verifier's prompt:
 
@@ -217,6 +216,53 @@ Restore the original contents and `attest` once more to go back to `TRUSTED`.
 
 ---
 
+## Benchmarking
+
+Measures the resource overhead attestation adds on the (simulated) device:
+wall-clock fTPM time (`T_FTPM`), CA-process CPU time (`T_CPU`), system CPU
+utilisation (`U`), and peak memory (`RSS`). The verifier runs in `--auto` mode,
+which enrolls once per run and then sends `attest` nonstop, so no manual enroll
+step is needed.
+
+**On your machine:**
+
+```sh
+./deploy.sh
+cd ~/optee/build && ./build.sh      # only if CAs/TA changed
+./start-optee.sh
+python3 FTPM/ra-ftpm/verifier.py --auto --file /root/protected.txt
+```
+
+**In QEMU (normal world):**
+
+```sh
+cd /mnt/host/benchmark && ./ftpm-benchmark.sh
+```
+
+Each run starts the CA in bench mode; it exits by itself after the configured
+number of requests and writes one CSV per run to the results directory.
+
+**Back on your machine — analyse the results:**
+
+```sh
+python3 FTPM/ftpm-analyzers/ftpm-benchmark-analyzer.py
+```
+
+With no arguments it reads `~/optee/benchmark/results/run*.csv` and writes
+`results/summery.txt` and `results/summery.png`. To compare against a
+no-security baseline, pass those runs with `--baseline`:
+
+```sh
+python3 FTPM/ftpm-analyzers/ftpm-benchmark-analyzer.py \
+    sec/run*.csv --baseline base/run*.csv
+```
+
+> **Boot with a fixed core count** (`QEMU_SMP=1`) for the benchmark, so `U`
+> isn't diluted across idle cores. Treat the millisecond figures as relative
+> (QEMU is emulated), not real-hardware numbers.
+
+---
+
 ## Options
 
 **Verifier (`verifier.py`):**
@@ -227,14 +273,14 @@ Restore the original contents and `attest` once more to go back to `TRUSTED`.
 | `--state` | `enrolled_device.json` | Where enrollment data is stored |
 | `--file PATH` | (none) | A file the attester must hash; repeatable |
 
-**CA (`ra_ftpm_ca`):**
+**CA (`optee_example_ra_ftpm`):**
 
 ```
-ra_ftpm_ca <verifier-ip> <port>
+optee_example_ra_ftpm [<verifier-ip> <port>]
 ```
 
-Compile-time limits: up to `MAX_FILES` (32) files per round and a `MAX_CMD`
-(4096-byte) command buffer.
+With no arguments it connects to `10.0.2.2 5000`. Compile-time limits: up to
+`MAX_FILES` (32) files per round and a `MAX_CMD` (4096-byte) command buffer.
 
 ---
 
@@ -267,7 +313,13 @@ Compile-time limits: up to `MAX_FILES` (32) files per round and a `MAX_CMD`
 ## File layout
 
 ```
-main.c                 CA / attester source (C, runs on the device)
-verifier.py            Verifier (Python, runs on the trusted host)
-enrolled_device.json   Written by the verifier on 'enroll'
+deploy.sh                                         Copies CAs + scripts into the OP-TEE tree
+build.sh, start-optee.sh                          Build and boot the OP-TEE QEMU device
+FTPM/ra-ftpm/host/main.c                          CA / attester source (C, runs on the device)
+FTPM/ra-ftpm/host/bench.h                    Per-request benchmark hooks for the CA
+FTPM/ra-ftpm/verifier.py                          Verifier (Python, runs on the trusted host)
+FTPM/ftpm-analyzers/ftpm-benchmark.sh             Runs the benchmark inside QEMU
+FTPM/ftpm-analyzers/ftpm-benchmark-analyzer.py    Summarises + plots the results
+PTA/ra-pta/                                       PTA-based attester variant
+enrolled_device.json                              Written by the verifier on 'enroll'
 ```

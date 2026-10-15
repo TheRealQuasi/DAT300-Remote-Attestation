@@ -38,6 +38,8 @@ import os
 import secrets
 import socket
 import struct
+import time
+import csv
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
@@ -224,8 +226,36 @@ def main():
     ap.add_argument("--file", action="append", default=[],
                     metavar="PATH",
                     help="file the attester must hash (repeatable)")
+
+    # For the benchmark, the attester can send attests nonstop; the first one
+    # enrolls (unless --no-auto-enroll is given).
+    ap.add_argument("--auto", action="store_true",
+                    help="benchmark: send 'attest' automatically, nonstop")
+    ap.add_argument("--no-auto-enroll", dest="auto_enroll",
+                    action="store_false",
+                    help="in --auto, do NOT send the automatic enroll "
+                         "(every logged request is an attest)")
+
+    # For the DoS, log every request's verdict to a CSV file.
+    ap.add_argument("--verdict-csv", metavar="FILE",
+                    help="in --auto, log per-request pass/fail here")
+    ap.add_argument("--count", type=int, default=0,
+                    help="in --auto, stop after N attest requests (0 = unlimited)")
+    ap.add_argument("--timeout", type=float, default=120,
+                    help="per-request answer timeout; exceeding it = denied ")
+    ap.add_argument("--load-level", default="",
+                    help="label written to the verdict CSV, e.g. the number of "
+                         "contending TPM loops running on the device")
+
     args = ap.parse_args()
     files = args.file
+
+    vwriter = vfile = None
+    if args.verdict_csv:
+        os.makedirs(os.path.dirname(args.verdict_csv) or ".", exist_ok=True)
+        vfile = open(args.verdict_csv, "w", newline="")
+        vwriter = csv.writer(vfile)
+        vwriter.writerow(["seq", "unix_time", "result", "load_level"])
 
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -236,7 +266,11 @@ def main():
         print(f"Waiting for the attester on port {args.port}...")
         conn, addr = srv.accept()
         print(f"Attester connected from {addr[0]}")
-        conn.settimeout(120)   # max wait for an answer from the fTPM
+        conn.settimeout(args.timeout)   # max wait for an answer from the fTPM
+
+        # In --auto, the first request of each run enrolls (unless disabled),
+        # so there is no need to enroll by hand before benchmarking.
+        need_enroll = args.auto and args.auto_enroll
 
         with conn:
             # Only cache responses that the verifier accepted during enrollment
@@ -255,6 +289,8 @@ def main():
                     return
                 if cmd not in ("enroll", "attest", "test-replay"):
                     continue
+                is_attest = (cmd == "attest")
+                is_enroll = (cmd == "enroll")
                 try:
                     if cmd == "test-replay":
                         if last_accepted_response is None:
@@ -282,11 +318,31 @@ def main():
                         last_accepted_response = live_response
                     send_msg(conn, result.encode())
                     print(f"  -> {result}")
+
+                # The attester may be running a DoS test, so it may not answer in time.
                 except (ConnectionError, OSError) as e:
-                    print(f"  -> connection lost: {e}")
-                    break          # go back and wait for a reconnect
+                    # over --timeout, or connection dropped -> this request is denied
+                    print(f"  -> denied: {e}")
+                    if vwriter and is_attest:
+                        vwriter.writerow([done, f"{time.time():.3f}",
+                                          "TIMEOUT/LOST", args.load_level])
+                        vfile.flush()
+                    break
+
+                # The attester may be running a DoS test, so it may send a malformed quote.
                 except ValueError as e:
                     print(f"  -> ERROR: {e}")
+                    continue
+
+                if vwriter and is_attest:
+                    vwriter.writerow([done, f"{time.time():.3f}",
+                                      result.split(':')[0], args.load_level])
+                    vfile.flush()
+                if is_attest:
+                    done += 1
+                    if args.count and done >= args.count:
+                        print(f"  done: {done} attest requests")
+                        return
 
 
 if __name__ == "__main__":
