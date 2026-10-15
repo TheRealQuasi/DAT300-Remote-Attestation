@@ -46,7 +46,7 @@ static size_t get_evidence(const char *challenge, uint8_t *evidence) {
 static void run_client(const char *host,const char *port) {
  int fd=connect_host(host,port); fprintf(stderr,"Connected to verifier %s:%s; leave this running and use the verifier prompt.\n",host,port);
  for(;;){ uint8_t head[66],exp[KEY_MAX],mod[KEY_MAX],ev[EVIDENCE_MAX];size_t elen,mlen,evlen;uint16_t a,b;uint32_t d;
-  read_all(fd,head,sizeof(head)); if((head[0]!='E'&&head[0]!='A'))errx(1,"invalid verifier command");head[65]='\0';
+  read_all(fd,head,65); /* 1 command byte + 64 challenge hex chars */ if((head[0]!='E'&&head[0]!='A'))errx(1,"invalid verifier command");head[65]='\0';
   for(int i=1;i<65;i++)if(!((head[i]>='0'&&head[i]<='9')||(head[i]>='a'&&head[i]<='f')))errx(1,"invalid challenge");
   get_pubkey(exp,&elen,mod,&mlen);evlen=get_evidence((char *)&head[1],ev);
   a=htons((uint16_t)elen);b=htons((uint16_t)mlen);d=htonl((uint32_t)evlen);write_all(fd,&a,2);write_all(fd,&b,2);write_all(fd,&d,4);write_all(fd,exp,elen);write_all(fd,mod,mlen);write_all(fd,ev,evlen);
