@@ -43,6 +43,8 @@ import sys
 # Used when no CSV paths are given on the command line.
 DEFAULT_GLOB = "~/optee/benchmark/results/run*.csv"
 
+# Used when no output paths are given on the command line.
+OUT_DIR = "~/shared/DAT300-Remote-Attestation/FTPM/results"
 
 def natural_key(path):
     """Sort run10 after run2, not before it."""
@@ -108,87 +110,6 @@ def collect(paths, warmup):
     return dict(per_run=per_run, ta=all_ta, cpu=all_cpu,
                 busy=busy_all, total=total_all, rss_peak=rss_peak)
 
-
-def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("csv", nargs="*",
-                    help=f"run CSVs (a glob is fine); default {DEFAULT_GLOB}")
-    ap.add_argument("--baseline", nargs="+", default=[], metavar="CSV",
-                    help="no-security run CSVs; prints the overhead delta")
-    ap.add_argument("--warmup", type=int, default=0,
-                    help="discard the first N requests of each run (default 0)")
-    ap.add_argument("--cores", type=int, default=0,
-                    help="also report U x this core count (undo all-cores averaging)")
-    ap.add_argument("--out", default="results/summery.txt",
-                    help="also write the text summary here (default results/summery.txt)")
-    ap.add_argument("--plot", default="results/summery.png",
-                    help="write the diagram here (default results/summery.png; '' to skip)")
-    a = ap.parse_args()
-
-    # No files given -> use the default results glob (expanded here, since the
-    # shell can't expand it when nothing is typed).
-    if not a.csv:
-        a.csv = sorted(glob.glob(os.path.expanduser(DEFAULT_GLOB)))
-        if not a.csv:
-            sys.exit(f"no CSVs given and none found at {DEFAULT_GLOB}")
-
-    agg = collect(a.csv, a.warmup)
-    lines = [f"runs analysed: {len(agg['per_run'])} "
-             f"(warm-up {a.warmup} discarded per run)", ""]
-
-    for label, s, note in agg["per_run"]:
-        if note:
-            lines.append(f"{label}: {note}")
-            continue
-        lines.append(f"{label:<10} {describe('T_FTPM', s['ta'], ' ms')}")
-        if s["cpu"]:
-            lines.append(f"{'':<10} {describe('T_CPU', s['cpu'], ' ms')}")
-        u_txt = f"{s['u']:.4f}" if s["u"] is not None else "undefined (0 ticks)"
-        if a.cores:
-            u_txt += f"   (U x {a.cores} = {s['u'] * a.cores:.4f})" if s["u"] is not None else ""
-        lines.append(f"{'':<10} U(pooled)={u_txt}   ({s['busy']}/{s['total']} ticks)")
-        if s["rss"]:
-            lines.append(f"{'':<10} RSS peak={max(s['rss']) / 1024:.2f} MiB")
-
-    lines += ["", "-" * 60, describe("T_FTPM (all)", agg["ta"], " ms")]
-    if agg["cpu"]:
-        lines.append(describe("T_CPU (all)", agg["cpu"], " ms"))
-    if agg["total"]:
-        u = agg["busy"] / agg["total"]
-        u_line = f"U pooled over all runs: {u:.4f}  ({agg['busy']}/{agg['total']} ticks)"
-        if a.cores:
-            u_line += f"   (U x {a.cores} = {u * a.cores:.4f})"
-        lines.append(u_line)
-    else:
-        lines.append("U pooled: no ticks recorded")
-    if agg["rss_peak"]:
-        lines.append(f"RSS peak over all runs: {agg['rss_peak'] / 1024:.2f} MiB")
-
-    # ---- overhead vs baseline ----------------------------------------
-    if a.baseline:
-        base = collect(a.baseline, a.warmup)
-        lines += ["", "=" * 60, "OVERHEAD (with-security  minus  baseline), medians:"]
-        lines.append(delta_line("T_FTPM", agg["ta"], base["ta"], " ms"))
-        if agg["cpu"] and base["cpu"]:
-            lines.append(delta_line("T_CPU ", agg["cpu"], base["cpu"], " ms"))
-        if agg["rss_peak"] and base["rss_peak"]:
-            lines.append(f"RSS peak   baseline={base['rss_peak']/1024:.2f} MiB  "
-                         f"with-sec={agg['rss_peak']/1024:.2f} MiB  "
-                         f"delta={(agg['rss_peak']-base['rss_peak'])/1024:+.2f} MiB")
-
-    text = "\n".join(lines)
-    print(text)
-    if a.out:
-        ensure_dir(a.out)
-        with open(a.out, "w") as f:
-            f.write(text + "\n")
-
-    if a.plot and any(note is None for _, _, note in agg["per_run"]):
-        ensure_dir(a.plot)
-        make_plot(agg["per_run"], a.plot)
-
-
 def ensure_dir(path):
     """Create the parent directory of an output file if it doesn't exist."""
     d = os.path.dirname(path)
@@ -252,6 +173,85 @@ def make_plot(per_run, path):
     fig.savefig(path, dpi=120)
     print(f"\ndiagram written to {path}")
 
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("csv", nargs="*",
+                    help=f"run CSVs (a glob is fine); default {DEFAULT_GLOB}")
+    ap.add_argument("--baseline", nargs="+", default=[], metavar="CSV",
+                    help="no-security run CSVs; prints the overhead delta")
+    ap.add_argument("--warmup", type=int, default=0,
+                    help="discard the first N requests of each run (default 0)")
+    ap.add_argument("--cores", type=int, default=0,
+                    help="also report U x this core count (undo all-cores averaging)")
+    ap.add_argument("--out", default=OUT_DIR + "/benchmark-summary.txt",
+                    help="also write the text summary here")
+    ap.add_argument("--plot", default=OUT_DIR + "/benchmark-summary.png",
+                    help="write the plot here ('' to skip)")
+    a = ap.parse_args()
+
+    # No files given -> use the default results glob (expanded here, since the
+    # shell can't expand it when nothing is typed).
+    if not a.csv:
+        a.csv = sorted(glob.glob(os.path.expanduser(DEFAULT_GLOB)))
+        if not a.csv:
+            sys.exit(f"no CSVs given and none found at {DEFAULT_GLOB}")
+
+    agg = collect(a.csv, a.warmup)
+    lines = [f"runs analysed: {len(agg['per_run'])} "
+             f"(warm-up {a.warmup} discarded per run)", ""]
+
+    for label, s, note in agg["per_run"]:
+        if note:
+            lines.append(f"{label}: {note}")
+            continue
+        lines.append(f"{label:<10} {describe('T_FTPM', s['ta'], ' ms')}")
+        if s["cpu"]:
+            lines.append(f"{'':<10} {describe('T_CPU', s['cpu'], ' ms')}")
+        u_txt = f"{s['u']:.4f}" if s["u"] is not None else "undefined (0 ticks)"
+        if a.cores:
+            u_txt += f"   (U x {a.cores} = {s['u'] * a.cores:.4f})" if s["u"] is not None else ""
+        lines.append(f"{'':<10} U(pooled)={u_txt}   ({s['busy']}/{s['total']} ticks)")
+        if s["rss"]:
+            lines.append(f"{'':<10} RSS peak={max(s['rss']) / 1024:.2f} MiB")
+
+    lines += ["", "-" * 60, describe("T_FTPM (all)", agg["ta"], " ms")]
+    if agg["cpu"]:
+        lines.append(describe("T_CPU (all)", agg["cpu"], " ms"))
+    if agg["total"]:
+        u = agg["busy"] / agg["total"]
+        u_line = f"U pooled over all runs: {u:.4f}  ({agg['busy']}/{agg['total']} ticks)"
+        if a.cores:
+            u_line += f"   (U x {a.cores} = {u * a.cores:.4f})"
+        lines.append(u_line)
+    else:
+        lines.append("U pooled: no ticks recorded")
+    if agg["rss_peak"]:
+        lines.append(f"RSS peak over all runs: {agg['rss_peak'] / 1024:.2f} MiB")
+
+    # ---- overhead vs baseline ----------------------------------------
+    if a.baseline:
+        base = collect(a.baseline, a.warmup)
+        lines += ["", "=" * 60, "OVERHEAD (with-security  minus  baseline), medians:"]
+        lines.append(delta_line("T_FTPM", agg["ta"], base["ta"], " ms"))
+        if agg["cpu"] and base["cpu"]:
+            lines.append(delta_line("T_CPU ", agg["cpu"], base["cpu"], " ms"))
+        if agg["rss_peak"] and base["rss_peak"]:
+            lines.append(f"RSS peak   baseline={base['rss_peak']/1024:.2f} MiB  "
+                         f"with-sec={agg['rss_peak']/1024:.2f} MiB  "
+                         f"delta={(agg['rss_peak']-base['rss_peak'])/1024:+.2f} MiB")
+
+    text = "\n".join(lines)
+    print(text)
+    if a.out:
+        ensure_dir(a.out)
+        with open(a.out, "w") as f:
+            f.write(text + "\n")
+
+    if a.plot and any(note is None for _, _, note in agg["per_run"]):
+        ensure_dir(a.plot)
+        make_plot(agg["per_run"], a.plot)
 
 if __name__ == "__main__":
     main()
