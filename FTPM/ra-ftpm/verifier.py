@@ -273,6 +273,7 @@ def main():
         need_enroll = args.auto and args.auto_enroll
 
         with conn:
+            done = 0
             # Only cache responses that the verifier accepted during enrollment
             # or normal attestation, so the test replays a previously accepted quote.
             last_accepted_response = None
