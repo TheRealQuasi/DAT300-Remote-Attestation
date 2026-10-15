@@ -315,9 +315,9 @@ def main():
         out_path = ensure_dir(a.out)
         with open(out_path, "w") as f:
             f.write(text + "\n")
+
     if a.plot and any(not math.isnan(s["p50"]) for s in summary):
         make_plot(summary, ensure_dir(a.plot))
-
 
 if __name__ == "__main__":
     main()

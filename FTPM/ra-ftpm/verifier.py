@@ -206,45 +206,67 @@ def attest(conn, state_file, enroll, paths):
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=PORT)
-    ap.add_argument("--state", default=DEFAULT_STATE_FILE)
-    ap.add_argument("--file", action="append", default=[DEFAULT_PROTECTED_FILE],
+    ap = argparse.ArgumentParser(
+        description="Remote-attestation verifier for ra_ftpm_ca.")
+    ap.add_argument("--file", action="append", default=[],
                     metavar="PATH",
                     help="file the attester must hash (repeatable)")
+    ap.add_argument("--port", type=int, default=PORT)
+    ap.add_argument("--state", default=DEFAULT_STATE_FILE)
 
-    # For the benchmark, the attester can send attests nonstop; the first one
-    # enrolls (unless --no-auto-enroll is given).
-    ap.add_argument("--auto", action="store_true",
-                    help="benchmark: send 'attest' automatically, nonstop")
+    # Two non-interactive modes. With neither, the verifier is interactive
+    # (you type enroll / attest / quit). Both auto-send attests nonstop; the
+    # first request enrolls unless --no-auto-enroll.
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--benchmark", "--auto", dest="benchmark",
+                      action="store_true",
+                      help="benchmark mode: send attests nonstop for CA-side "
+                           "latency benchmarking (no verdict log)")
+    mode.add_argument("--dos", action="store_true",
+                      help="DoS mode: send attests, log each verdict to a CSV, "
+                           "and stop after --count attests")
+
     ap.add_argument("--no-auto-enroll", dest="auto_enroll",
                     action="store_false",
-                    help="in --auto, do NOT send the automatic enroll "
-                         "(every logged request is an attest)")
+                    help="do NOT send the automatic enroll at the start")
 
-    # For the DoS, log every request's verdict to a CSV file.
-    ap.add_argument("--dos", action="store_true",
-                    help="DoS test: log every request's verdict to a CSV file")
-                    
-    ap.add_argument("--verdict-csv", metavar="FILE", default=DOS_OUT_DIR + "/verifier_load10.csv",
-                    help="in --auto, log per-request pass/fail here")
-    ap.add_argument("--count", type=int, default=0,
-                    help="in --auto, stop after N attest requests (0 = unlimited)")
-    ap.add_argument("--timeout", type=float, default=120,
-                    help="per-request answer timeout; exceeding it = denied ")
-    ap.add_argument("--load-level", default="",
-                    help="label written to the verdict CSV, e.g. the number of "
-                         "contending TPM loops running on the device")
+    # Mode-tuned defaults: left as None here and filled in AFTER parsing, so an
+    # explicit value on the command line always wins.
+    ap.add_argument("--count", type=int, default=None,
+                    help="stop after N attests (default: 20 in --dos, "
+                         "unlimited otherwise)")
+    ap.add_argument("--timeout", type=float, default=None,
+                    help="per-request answer timeout (s); exceeding it = denied "
+                         "(default: 10 in --dos, 120 otherwise)")
+    ap.add_argument("--load-level", default="0",
+                    help="label for the DoS verdict CSV and its filename, e.g. "
+                         "the number of contending TPM workers (default 0)")
+    ap.add_argument("--dos-csv", metavar="FILE", default=None,
+                    help="where to log per-attest verdicts (default in --dos: "
+                         f"{DOS_OUT_DIR}/verifier_load<load-level>.csv)")
 
     args = ap.parse_args()
-    files = args.file
+    files = args.file or [DEFAULT_PROTECTED_FILE]
+
+    # Both modes auto-send attests.
+    args.auto = args.benchmark or args.dos
+
+    # Fill mode-specific defaults only where the user didn't set them.
+    if args.count is None:
+        args.count = 20 if args.dos else 0
+    if args.timeout is None:
+        args.timeout = 10.0 if args.dos else 120.0
+    if args.dos and args.dos_csv is None:
+        args.dos_csv = f"{DOS_OUT_DIR}/verifier_load{args.load_level}.csv"
 
     vwriter = vfile = None
-    if args.verdict_csv:
-        os.makedirs(os.path.dirname(args.verdict_csv) or ".", exist_ok=True)
-        vfile = open(args.verdict_csv, "w", newline="")
+    if args.dos_csv:
+        path = os.path.expanduser(args.dos_csv)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        vfile = open(path, "w", newline="")
         vwriter = csv.writer(vfile)
         vwriter.writerow(["seq", "unix_time", "result", "load_level"])
+        print(f"logging DoS verdicts to {path}")
 
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

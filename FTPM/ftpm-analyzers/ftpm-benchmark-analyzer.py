@@ -245,13 +245,12 @@ def main():
     text = "\n".join(lines)
     print(text)
     if a.out:
-        ensure_dir(a.out)
-        with open(a.out, "w") as f:
+        out_path = ensure_dir(a.out)
+        with open(out_path, "w") as f:
             f.write(text + "\n")
 
     if a.plot and any(note is None for _, _, note in agg["per_run"]):
-        ensure_dir(a.plot)
-        make_plot(agg["per_run"], a.plot)
+        make_plot(agg["per_run"], ensure_dir(a.plot))
 
 if __name__ == "__main__":
     main()
