@@ -19,7 +19,13 @@ LEVEL=${1:-0}
 REQ=${2:-20}
 IP=${3:-10.0.2.2}
 PORT=${4:-5000}
-LOAD_TOOL=${TOOL:-tpm2_pcrread}   # must match ftpm-dos-load.sh's tool
+# Which tool the load uses, so cleanup can pkill the right process. Mirrors
+# ftpm-dos-load.sh's LOAD selector (pcrread default, quote if LOAD=quote).
+if [ "${LOAD:-pcrread}" = "quote" ]; then
+    LOAD_TOOL=${TOOL:-tpm2_quote}
+else
+    LOAD_TOOL=${TOOL:-tpm2_pcrread}
+fi
 
 cleanup() {
     # Stop the load: kill the loader AND its worker loops by name, not just

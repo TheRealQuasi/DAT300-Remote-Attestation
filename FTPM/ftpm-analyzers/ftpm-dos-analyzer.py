@@ -235,6 +235,9 @@ def make_plot(rows, path):
 
     fig, ax = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
 
+    # Latency: NaN at fully-denied levels. matplotlib skips them, so the line
+    # ends where completions end - that is correct, not a bug. We DON'T invent
+    # a value; the success panel below explains the gap.
     ax[0].plot(xs, [s["p50"] for s in rows], "o-", label="p50")
     ax[0].plot(xs, [s["p95"] for s in rows], "s-", label="p95")
     ax[0].plot(xs, [s["p99"] for s in rows], "^-", label="p99")
@@ -243,11 +246,21 @@ def make_plot(rows, path):
     ax[0].legend()
     ax[0].grid(True, alpha=0.3)
 
+    # Shade the levels where no request completed (latency undefined), so the
+    # gap in the latency line is explained rather than mysterious.
+    denied_xs = [x for x, s in zip(xs, rows) if math.isnan(s["p50"])]
+    for x in denied_xs:
+        ax[0].axvspan(x - 0.4, x + 0.4, color="tab:red", alpha=0.08)
+    if denied_xs:
+        ax[0].text(0.99, 0.02, "shaded = no completed requests (fully denied)",
+                   transform=ax[0].transAxes, ha="right", va="bottom",
+                   fontsize=8, color="tab:red")
+
     succ = [s["succ"] for s in rows]
     ax[1].plot(xs, succ, "o-", color="tab:red")
     ax[1].set_ylabel("success rate (%)")
-    ax[1].set_ylim(0, 105)
-    ax[1].set_xlabel("contending TPM loops on the attester device")
+    ax[1].set_ylim(-5, 105)
+    ax[1].set_xlabel("contending TPM workers on the attester device")
     ax[1].set_title("Attestation success rate vs load")
     ax[1].grid(True, alpha=0.3)
     ax[1].set_xticks(xs)

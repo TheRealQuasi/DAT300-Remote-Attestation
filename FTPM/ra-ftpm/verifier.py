@@ -255,7 +255,7 @@ def main():
     if args.count is None:
         args.count = 20 if args.dos else 0
     if args.timeout is None:
-        args.timeout = 10.0 if args.dos else 120.0
+        args.timeout = 3.0 if args.dos else 120.0
     if args.dos and args.dos_csv is None:
         args.dos_csv = f"{DOS_OUT_DIR}/verifier_load{args.load_level}.csv"
 
@@ -273,18 +273,16 @@ def main():
     srv.bind(("0.0.0.0", args.port))
     srv.listen(1)
 
+    done = 0
+    need_enroll = args.auto and args.auto_enroll
+
     while True:
         print(f"Waiting for the attester on port {args.port}...")
         conn, addr = srv.accept()
         print(f"Attester connected from {addr[0]}")
         conn.settimeout(args.timeout)   # max wait for an answer from the fTPM
 
-        # In --auto, the first request of each run enrolls (unless disabled),
-        # so there is no need to enroll by hand before benchmarking.
-        need_enroll = args.auto and args.auto_enroll
-
         with conn:
-            done = 0
             while True:
                 if args.auto:
                     time.sleep(0.2)          # small gap between requests
@@ -303,17 +301,23 @@ def main():
                     send_msg(conn, result.encode())
                     print(f"  -> {result}")
 
-                # The attester may be running a DoS test, so it may not answer in time.
                 except (ConnectionError, OSError) as e:
-                    # over --timeout, or connection dropped -> this request is denied
+                    # Timeout or drop -> this attest is denied. Record it and
+                    # keep going, but the stream may be mid-message, so drop
+                    # this connection and wait for the CA to reconnect for the
+                    # next attest rather than reading stale bytes.
                     print(f"  -> denied: {e}")
                     if vwriter and is_attest:
                         vwriter.writerow([done, f"{time.time():.3f}",
                                           "TIMEOUT/LOST", args.load_level])
                         vfile.flush()
-                    break
+                    if is_attest:
+                        done += 1
+                        if args.count and done >= args.count:
+                            print(f"  done: {done} attests")
+                            return
+                    break    # leave inner loop -> outer loop re-accepts the CA
 
-                # The attester may be running a DoS test, so it may send a malformed quote.
                 except ValueError as e:
                     print(f"  -> ERROR: {e}")
                     continue
@@ -325,7 +329,7 @@ def main():
                 if is_attest:
                     done += 1
                     if args.count and done >= args.count:
-                        print(f"  done: {done} attest requests")
+                        print(f"  done: {done} attests")
                         return
 
 
