@@ -1,30 +1,25 @@
 /*
- * bench.h - fTPM benchmark for the CA.
+ * bench.h - attestation benchmark for the CA (fTPM or TPM).
  *
  * Bench mode is ON only when the environment variable BENCH_OUT is set.
  * Without it (normal mode) every bench_* call does nothing.
  *
- * Measures for each attestation request, over the fTPM call(s) only:
- *   T_FTPM   : wall-clock time, first fTPM command to last response (ns)
- *   CPU_proc : CPU time the CA process itself burned over that interval
- *              (ns, user+system) - isolated from other processes and
- *              independent of how many cores exist. Does NOT include the
- *              secure-world TA; use T_TA for the full end-to-end cost.
- *   U        : system-wide CPU load from /proc/stat over the same interval,
- *              all cores: U = busy / total = 1 - (idle + iowait) / total
- *   RSS      : peak resident set size of the CA so far (VmHWM, kB)
+ * Measured per attestation request, from just before the first TPM
+ * command to just after the response to the last one:
+ *   t_ftpm_ns   : wall-clock time (CLOCK_MONOTONIC)              -> T_att
+ *   busy/total  : /proc/stat ticks, all cores summed             -> U
+ *                 U = busy / total = 1 - (idle + iowait) / total
+ *   cpu_proc_ns : CPU time charged to the CA process (not used in report)
+ *   rss_kb      : peak memory of the CA so far       (not used in report)
  *
- *   bench_start(&b);     // just before the first fTPM command
- *   ... fTPM call(s) ...
+ *   bench_start(&b);     // just before the first TPM command
+ *   ... TPM call(s) ...
  *   bench_stop(&b);      // just after the last response
  *   bench_log(&b);       // appends one CSV row to $BENCH_OUT
  *   if (bench_done(&b))  // true after $BENCH_REQUESTS requests (if set)
  *           exit(0);
- *
- * NOTE for overhead studies: run QEMU with a fixed core count (e.g.
- * QEMU_SMP=1) so U is not diluted across idle cores, and treat the
- * numbers as RELATIVE (emulated), not absolute hardware figures.
  */
+
 #ifndef BENCH_H
 #define BENCH_H
 
@@ -40,12 +35,21 @@ struct bench {
 	unsigned long long busy0, total0, busy1, total1;
 };
 
+// Checked before calling start, stop, log and done as 
+// normal mode and bench mode share the same binary
 static inline int bench_on(void)
 {
 	return getenv("BENCH_OUT") != NULL;
 }
 
-/* first line of /proc/stat = all cores summed */
+/*
+ * USED IN REPORT (CPU load U, columns busy_ticks and total_ticks).
+ * Reads the first line of /proc/stat: CPU ticks (10 ms each) since boot,
+ * summed over all cores. Called at start and stop; the differences give
+ *   U = busy / total = 1 - (idle + iowait) / total
+ * System-wide, so it includes all work on the attester during the request
+ * (CA, kernel, tee-supplicant, secure world), not only the CA process.
+ */
 static inline void bench_cpu(unsigned long long *busy, unsigned long long *total)
 {
 	unsigned long long v[8] = { 0 };
@@ -62,7 +66,12 @@ static inline void bench_cpu(unsigned long long *busy, unsigned long long *total
 	*busy = *total - v[3] - v[4];
 }
 
-/* CPU time burned by THIS process (user+system), in nanoseconds */
+/*
+ * NOT USED IN REPORT. Extra data only (column cpu_proc_ns).
+ * CPU time charged to the CA process itself (user + kernel), in ns.
+ * Misses work done by other processes for the request (e.g. tee-supplicant),
+ * so it underestimates the load.
+ */
 static inline uint64_t bench_cpu_proc(void)
 {
 	struct timespec t;
@@ -71,7 +80,10 @@ static inline uint64_t bench_cpu_proc(void)
 	return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
 }
 
-/* peak resident set size so far (VmHWM from /proc/self/status), in kB */
+/*
+ * NOT USED IN REPORT. Extra data only (column rss_kb).
+ * Peak RAM used by the CA process so far (VmHWM), in kB.
+ */
 static inline unsigned long bench_rss_kb(void)
 {
 	FILE *f = fopen("/proc/self/status", "r");
@@ -87,6 +99,13 @@ static inline unsigned long bench_rss_kb(void)
 	return kb;
 }
 
+/*
+ * USED IN REPORT (latency T_att, column t_ftpm_ns).
+ * Current time in nanoseconds from CLOCK_MONOTONIC. This clock only moves
+ * forward and is not affected if the system time is changed (NTP, date),
+ * so it is the right clock for measuring durations. Read at start and
+ * stop; the difference is the wall-clock time of the request.
+ */
 static inline uint64_t bench_now(void)
 {
 	struct timespec t;
