@@ -30,6 +30,12 @@ rm -rf "$OPTEE/optee_examples/ra-ftpm"
 cp -r "$REPO/FTPM/ra-ftpm" "$OPTEE/optee_examples/"
 echo "FTPM/ra-ftpm              		-> $OPTEE/optee_examples/ra-ftpm/"
 
+# enroll script -> ~/optee/enroll  (= /mnt/host/enroll inside QEMU)
+mkdir -p "$OPTEE/enroll"
+cp "$REPO/FTPM/ftpm-shells/ftpm-enroll.sh" "$OPTEE/enroll/"
+chmod +x "$OPTEE/enroll/ftpm-enroll.sh"
+echo "FTPM/ftpm-shells/ftpm-enroll.sh  	-> $OPTEE/enroll/"
+
 # benchmark script -> ~/optee/benchmark  (= /mnt/host/benchmark inside QEMU)
 mkdir -p "$OPTEE/benchmark"
 cp "$REPO/FTPM/ftpm-shells/ftpm-benchmark.sh" "$OPTEE/benchmark/"

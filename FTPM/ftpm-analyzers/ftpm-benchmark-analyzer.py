@@ -23,7 +23,8 @@ printed as the overhead attestation adds:
     python3 ftpm-benchmark-analyzer.py sec/run*.csv --baseline base/run*.csv
 
 Options:
-    --warmup N   discard the first N requests of each run (default 10)
+    --warmup N   discard the first N requests of each run (default 0;
+                 pass 1-2 to drop cold-start outliers on short runs)
     --cores C    also report U x C (undo the all-cores averaging)
     --out FILE   also write the text summary there
     --plot FILE  write the diagram (default summary.png; '' to skip)

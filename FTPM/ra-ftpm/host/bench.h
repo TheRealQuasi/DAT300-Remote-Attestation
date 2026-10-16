@@ -148,12 +148,13 @@ static inline void bench_log(struct bench *b)
 	fclose(f);
 }
 
-/* true once $BENCH_REQUESTS requests have been logged */
 static inline int bench_done(struct bench *b)
 {
 	const char *n = getenv("BENCH_REQUESTS");
 
-	return bench_on() && n && b->seq >= (unsigned)atoi(n);
+	if (!bench_on() || !n)
+		return 0;
+	return b->seq >= (unsigned)atoi(n);
 }
 
 #endif /* BENCH_H */

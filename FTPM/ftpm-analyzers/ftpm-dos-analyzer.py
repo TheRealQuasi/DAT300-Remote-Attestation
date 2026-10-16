@@ -6,15 +6,15 @@ Pairs two per-level CSVs from one DoS run and reports availability:
 
   CA side   (latency)   ca_load<N>.csv        from bench.h (BENCH_OUT)
                         seq,t_ftpm_ns,cpu_proc_ns,busy_ticks,total_ticks,rss_kb
-  Verifier  (verdict)   verifier_load<N>.csv  from verifier.py --verdict-csv
+  Verifier  (verdict)   verifier_load<N>.csv  from verifier.py --dos
                         seq,unix_time,result,load_level
 
-Latency is the SAME metric as the overhead benchmark (CA-side t_ftpm_ns),
-so DoS numbers are directly comparable to the benchmark numbers. The
-verifier file is the authority on whether a request was answered: the CA
-only logs a row for requests it completes, so a request the verifier
-marks TIMEOUT/LOST (or one with no matching CA seq) is a DENIED request
-with no latency sample. That is the availability signal, not a mismatch.
+Enrollment is done SEPARATELY (not inside a run), so every row here is an
+attest and the two files share the same seq numbering: CA seq k and verifier
+seq k are the same request. They are matched by seq:
+    verifier TRUSTED  + CA row at that seq -> completed, latency from CA
+    verifier TIMEOUT/LOST                  -> denied (no latency)
+    verifier TRUSTED  but no CA row        -> denied (CA never logged it)
 
 Per load level N it reports:
     n          completed attestations (matched CA latency)
@@ -22,15 +22,10 @@ Per load level N it reports:
     success%   n / (n + denied)
     p50/p95/p99/max   fTPM latency over completed requests (ms)
 
-Files are paired by the number N in their names. A CA file with no
-verifier partner is still summarised (latency only, success% unknown);
-a verifier file with no CA partner shows success% but no latency.
-
 Usage:
-    python3 ftpm-dos-analyzer.py                 # auto: ~/optee/dos/results
-    python3 ftpm-dos-analyzer.py --warmup 1      # drop the enroll / warm-up
+    python3 ftpm-dos-analyzer.py                 # auto-discover under results dir
+    python3 ftpm-dos-analyzer.py --warmup 1      # also drop the first attest
     python3 ftpm-dos-analyzer.py ca_load*.csv verifier_load*.csv   # explicit
-    python3 ftpm-dos-analyzer.py --ca-glob '...' --verifier-glob '...'
 
 Needs matplotlib for the plot:  pip install --break-system-packages matplotlib
 (The text summary works without it.)
@@ -53,9 +48,6 @@ OUT_DIR = "~/shared/DAT300-Remote-Attestation/FTPM/results"
 
 # Verifier results that mean "this request was NOT answered in time".
 DENIED_TAGS = {"TIMEOUT/LOST"}
-# Verifier results that are not attests and must be ignored entirely.
-SKIP_TAGS = {"ENROLLED"}
-
 
 def pct(v, p):
     """Same percentile convention as the CA-side benchmark analyzer."""
@@ -118,11 +110,9 @@ def merge_level(ca_paths, ver_paths, warmup):
     """
     Merge one level's CA + verifier files into availability stats.
 
-    The verifier rows are the master list of requests. For each attest:
-      result in DENIED_TAGS        -> denied (no latency)
-      else seq present in CA map   -> completed, latency from CA
-      else (no CA row)             -> denied (CA never finished it)
-    CA latency is read ONLY for requests the verifier counts as completed.
+    Enroll is separate, so CA and verifier share seq numbering. Match by seq:
+    the verifier row is the authority on answered vs denied; its latency (when
+    completed) is the CA's t_ftpm_ns at the SAME seq.
     """
     ca = {}
     for p in ca_paths:
@@ -132,38 +122,27 @@ def merge_level(ca_paths, ver_paths, warmup):
     for p in ver_paths:
         ver += read_verifier(p)
 
-    # The CA logs one row per quote, and seq 0 is the ENROLL (a quote the
-    # verifier does not judge). Drop it so the CA's attests line up with the
-    # verifier's: CA attests become ca_attest[0..] = the verifier's seq 0..
-    # Any explicit ENROLLED verdict on the verifier side is dropped too.
-    ca_seqs = sorted(ca)
-    ca_attest = [ca[s] for s in ca_seqs[1:]] if ca_seqs else []   # drop enroll
-    ver_attest = [res for _, res in ver if res not in SKIP_TAGS]
-
-    # warmup now means: discard the first N *attests* from BOTH sides, so they
-    # stay aligned. The enroll is already gone above, separately.
+    # In seq order so warmup drops the *first* attests consistently.
+    ver_attests = sorted((seq, res) for seq, res in ver)
     if warmup > 0:
-        ca_attest = ca_attest[warmup:]
-        ver_attest = ver_attest[warmup:]
+        ver_attests = ver_attests[warmup:]
 
     completed_lat, denied = [], 0
 
-    if ver_attest:
-        # Verifier is the authority on answered vs denied. For each attest in
-        # order, a TIMEOUT/LOST is a denial; otherwise it completed and takes
-        # the next CA attest latency (positional, since both are now aligned).
-        ci = 0
-        for res in ver_attest:
+    if ver_attests:
+        for seq, res in ver_attests:
             if res in DENIED_TAGS:
                 denied += 1
-            elif ci < len(ca_attest):
-                completed_lat.append(ca_attest[ci])
-                ci += 1
+            elif seq in ca:
+                completed_lat.append(ca[seq])     # same-seq latency
             else:
-                denied += 1          # verifier counted it but CA has no row
+                denied += 1          # verifier says answered but CA has no row
     else:
         # CA-only (no verifier file): latency only, availability unknown.
-        completed_lat = ca_attest
+        ca_seqs = sorted(ca)
+        if warmup > 0:
+            ca_seqs = ca_seqs[warmup:]
+        completed_lat = [ca[s] for s in ca_seqs]
         denied = None
 
     lat = sorted(completed_lat)
@@ -191,8 +170,8 @@ def summarise(levels, warmup):
 
 
 def format_text(rows, warmup):
-    lines = [f"load levels: {len(rows)} (enroll dropped; warm-up {warmup} "
-             f"attests discarded per side)", ""]
+    lines = [f"load levels: {len(rows)} (warm-up {warmup} attests discarded "
+             f"per side)", ""]
     for s in rows:
         succ = f"{s['succ']:5.1f}%" if not math.isnan(s["succ"]) else "   -  "
         denied = f"{s['denied']:<3}" if s["denied_known"] else " ? "
@@ -291,8 +270,7 @@ def main():
     ap.add_argument("--verifier-glob", default=VERIFIER_GLOB,
                     help=f"verifier verdict files (default {VERIFIER_GLOB})")
     ap.add_argument("--warmup", type=int, default=0,
-                    help="discard the first N *attests* from both CA and "
-                         "verifier (the enroll row is dropped automatically)")
+                    help="discard the first N attests (by seq) from both sides")
     ap.add_argument("--out", default=OUT_DIR + "/dos-summary.txt",
                     help="also write the text summary here")
     ap.add_argument("--plot", default=OUT_DIR + "/dos-summary.png",
@@ -331,6 +309,7 @@ def main():
 
     if a.plot and any(not math.isnan(s["p50"]) for s in summary):
         make_plot(summary, ensure_dir(a.plot))
+
 
 if __name__ == "__main__":
     main()

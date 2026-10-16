@@ -15,19 +15,27 @@
 #   requests : attests per level (default 20; passed as the verifier --count)
 #   levels    : edit LEVELS below (default 0 1 2 4 8 16 32)
 
-REQ=${1:-20}
-LEVELS="0"
-
-# Path to verifier.py and the protected file - adjust if yours differ.
+ANALYZER=${ANALYZER:-FTPM/ftpm-analyzers/ftpm-dos-analyzer.py}
 VERIFIER=${VERIFIER:-FTPM/ra-ftpm/verifier.py}
 PROTECTED=${PROTECTED:-/root/protected.txt}
+TIMEOUT=${TIMEOUT:-5}
+LEVELS=${LEVELS:-"0 2 4"}
 
+RUNS=${1:-1}
+REQ=${2:-5}
+
+# The sweep - one verifier round per level.
 for LEVEL in $LEVELS; do
     echo "============================================================"
     echo "LEVEL $LEVEL  (waiting for the attester to connect...)"
     echo "============================================================"
-    python3 "$VERIFIER" --file "$PROTECTED" --dos \
-        --count "$REQ" --load-level "$LEVEL"
+    # DoS policy: --dos logs verdicts and implies auto-send. --no-auto-enroll
+    # because enrollment is done ONCE up front, so only attests flow here
+    # (count = REQ, no enroll row). Short timeout so a starved request = denied.
+    python3 "$VERIFIER" --file "$PROTECTED" --dos\
+        --requests "$REQ" --runs "$RUNS" --timeout "$TIMEOUT" --load-level "$LEVEL"
 done
 
-echo "sweep done. Analyse: python3 FTPM/ftpm-analyzers/ftpm-dos-analyzer.py"s
+echo "Analyzing results..."
+python3 "$ANALYZER"
+echo "done -> "FTPM/results"

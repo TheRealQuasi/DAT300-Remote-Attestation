@@ -9,7 +9,18 @@
 #   VERIFIER  : path to verifier.py (default FTPM/ra-ftpm/verifier.py)
 #   extra args after -- are passed straight to verifier.py
 
+ANALYZER=${ANALYZER:-FTPM/ftpm-analyzers/ftpm-benchmark-analyzer.py}
 VERIFIER=${VERIFIER:-FTPM/ra-ftpm/verifier.py}
+PROTECTED=${PROTECTED:-/root/protected.txt}
+TIMEOUT=${TIMEOUT:-120}
+
+RUNS=${1:-3}
+REQ=${2:-5}
 
 echo "benchmark verifier: waiting for the attester (Ctrl-C to stop)"
-exec python3 "$VERIFIER" --benchmark "$@"
+python3 "$VERIFIER" --file "$PROTECTED" --benchmark \
+    --requests "$REQ" --runs "$RUNS" --timeout "$TIMEOUT" "$@"
+
+echo "Analyzing results..."
+python3 "$ANALYZER"
+echo "done -> FTPM/results"

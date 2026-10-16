@@ -1,35 +1,21 @@
 #!/usr/bin/env python3
 """
-verifier.py - remote-attestation verifier for ra_ftpm_ca (runs on Ubuntu).
+verifier.py - remote-attestation verifier for ra_ftpm_ca.
 
-    python3 verifier.py --file /root/protected.txt [--file ...]
+Three non-interactive modes (pick one); without any, it is interactive:
+    --enroll      send ONE enroll, then stop            (run once per boot)
+    --benchmark   send attests nonstop, no log          (CA drives run length)
+    --dos         send --count attests, log each verdict to a CSV, then stop
 
-The verifier decides which files the attester must hash. Every attest
-command carries a fresh nonce + that file list. The fTPM then builds
-PCR 16 from scratch:
-
-    PCR16 = 0
-    PCR16 = SHA256(PCR16 || SHA256(nonce))
-    PCR16 = SHA256(PCR16 || SHA256(file))      for each file, in order
-
-and signs PCRs 0-7 + 16 together with the nonce. The CA also sends the
-hash of each file; the verifier only accepts them if replaying them
-gives exactly the signed PCR 16. At enrollment those hashes are saved
-as the known-good values; later rounds must match them.
-
-Waits for the attester to connect. The attester stays connected; you
-then type commands here:
-
-    enroll   send a nonce, check the quote, and trust this device
-             (saves its AK, boot PCRs 0-7 and each file's hash to
-             enrolled_device.json)
-    attest   send a fresh nonce, check the quote against the enrollment
-    quit     stop the verifier
+The CA drives the run: it exits after its BENCH_REQUESTS (benchmark/DoS) or
+when this verifier closes the connection. This verifier never enrolls inside
+a benchmark/DoS run - enroll separately with --enroll first.
 
 Needs: sudo apt install python3-cryptography
 """
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -37,7 +23,6 @@ import secrets
 import socket
 import struct
 import time
-import csv
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
@@ -45,14 +30,13 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 PORT = 5000
-
 CMD_ATTEST = b"A"
 NUM_PCRS = 9          # PCRs 0-7 and 16, in that order
 
-# Used when they are not given on the command line.
 DOS_OUT_DIR = "~/optee/dos/results"
-DEFAULT_STATE_FILE = "enrolled_device.json"
+DEFAULT_STATE_FILE = "trusted/enrolled_device.json"
 DEFAULT_PROTECTED_FILE = "/root/protected.txt"
+
 
 def expected_pcr16(nonce, ref_hashes):
     """The PCR 16 value the fTPM must produce if every file is unchanged."""
@@ -158,27 +142,22 @@ def attest(conn, state_file, enroll, paths):
         return "FAIL: wrong number of file hashes"
     hashes_now = [hash_blob[i * 32:(i + 1) * 32] for i in range(len(paths))]
 
-    # Is the quote really signed by this AK?
     try:
         ak_to_key(ak_blob).verify(sig_to_der(sig), quote,
                                   ec.ECDSA(hashes.SHA256()))
     except InvalidSignature:
         return "FAIL: bad signature"
 
-    # Is it fresh?
     q_nonce, pcr_digest = read_quote(quote)
     if q_nonce != nonce:
         return "FAIL: wrong nonce (replayed quote?)"
-
-    # Are the PCR values we were sent the ones the fTPM signed?
     if hashlib.sha256(b"".join(pcrs)).digest() != pcr_digest:
         return "FAIL: PCR values don't match the signed quote"
-
-    # Are the file hashes the ones the fTPM extended, after OUR nonce?
     if pcrs[8] != expected_pcr16(nonce, hashes_now):
         return "FAIL: file hashes don't match the signed PCR 16"
 
     if enroll:
+        os.makedirs(os.path.dirname(state_file) or ".", exist_ok=True)
         with open(state_file, "w") as f:
             json.dump({"ak": ak_blob.hex(),
                        "boot_pcrs": [p.hex() for p in pcrs[:8]],
@@ -188,149 +167,142 @@ def attest(conn, state_file, enroll, paths):
         return f"ENROLLED ({len(paths)} files)"
 
     if not os.path.exists(state_file):
-        return "FAIL: not enrolled yet (type 'enroll' first)"
+        return "FAIL: not enrolled yet (run --enroll first)"
     with open(state_file) as f:
         known = json.load(f)
-
-    # Is it the device we know, running the software we expect?
     if known["ak"] != ak_blob.hex():
         return "FAIL: unknown device (AK differs)"
     if known["boot_pcrs"] != [p.hex() for p in pcrs[:8]]:
         return "FAIL: boot PCRs 0-7 changed since enrollment"
-
-    # Every file must still have the hash it had at enrollment.
     for p, h in zip(paths, hashes_now):
         if known["files"].get(p) != h.hex():
             return f"FAIL: {p} has been modified (or is missing)"
     return "TRUSTED"
 
 
-def main():
+# ----------------------------------------------------------- driver
+def parse_args():
     ap = argparse.ArgumentParser(
         description="Remote-attestation verifier for ra_ftpm_ca.")
-    ap.add_argument("--file", action="append", default=[],
-                    metavar="PATH",
+    ap.add_argument("--file", action="append", default=[], metavar="PATH",
                     help="file the attester must hash (repeatable)")
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--state", default=DEFAULT_STATE_FILE)
 
-    # Two non-interactive modes. With neither, the verifier is interactive
-    # (you type enroll / attest / quit). Both auto-send attests nonstop; the
-    # first request enrolls unless --no-auto-enroll.
     mode = ap.add_mutually_exclusive_group()
-    mode.add_argument("--benchmark", "--auto", dest="benchmark",
-                      action="store_true",
-                      help="benchmark mode: send attests nonstop for CA-side "
-                           "latency benchmarking (no verdict log)")
+    mode.add_argument("--enroll", action="store_true",
+                      help="send ONE enroll, then stop")
+    mode.add_argument("--benchmark", action="store_true",
+                      help="send attests nonstop, no verdict log (Ctrl-C to stop)")
     mode.add_argument("--dos", action="store_true",
-                      help="DoS mode: send attests, log each verdict to a CSV, "
-                           "and stop after --count attests")
+                      help="send --count attests, log each verdict, then stop")
 
-    ap.add_argument("--no-auto-enroll", dest="auto_enroll",
-                    action="store_false",
-                    help="do NOT send the automatic enroll at the start")
+    ap.add_argument("--requests", type=int, default=0,
+                    help="override the CA's BENCH_REQUESTS (0 = unlimited)")
+    ap.add_argument("--runs", type=int, default=0,
+                    help="number of runs in --dos (default 1)")
+    ap.add_argument("--timeout", type=float, default=120.0,
+                    help="per-attest answer timeout in seconds")
 
-    # Mode-tuned defaults: left as None here and filled in AFTER parsing, so an
-    # explicit value on the command line always wins.
-    ap.add_argument("--count", type=int, default=None,
-                    help="stop after N attests (default: 20 in --dos, "
-                         "unlimited otherwise)")
-    ap.add_argument("--timeout", type=float, default=None,
-                    help="per-request answer timeout (s); exceeding it = denied "
-                         "(default: 10 in --dos, 120 otherwise)")
     ap.add_argument("--load-level", default="0",
-                    help="label for the DoS verdict CSV and its filename, e.g. "
-                         "the number of contending TPM workers (default 0)")
+                    help="label + filename for the DoS verdict CSV")
     ap.add_argument("--dos-csv", metavar="FILE", default=None,
-                    help="where to log per-attest verdicts (default in --dos: "
-                         f"{DOS_OUT_DIR}/verifier_load<load-level>.csv)")
+                    help="override the DoS verdict CSV path")
 
     args = ap.parse_args()
-    files = args.file or [DEFAULT_PROTECTED_FILE]
-
-    # Both modes auto-send attests.
-    args.auto = args.benchmark or args.dos
-
-    # Fill mode-specific defaults only where the user didn't set them.
-    if args.count is None:
-        args.count = 20 if args.dos else 0
-    if args.timeout is None:
-        args.timeout = 3.0 if args.dos else 120.0
+    args.file = args.file or [DEFAULT_PROTECTED_FILE]
+    args.auto = args.enroll or args.benchmark or args.dos
+    args.done = 0
+    args.count = args.requests * args.runs             # unlimited; the CA ends each run
     if args.dos and args.dos_csv is None:
         args.dos_csv = f"{DOS_OUT_DIR}/verifier_load{args.load_level}.csv"
+    return args
 
-    vwriter = vfile = None
-    if args.dos_csv:
-        path = os.path.expanduser(args.dos_csv)
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        vfile = open(path, "w", newline="")
-        vwriter = csv.writer(vfile)
-        vwriter.writerow(["seq", "unix_time", "result", "load_level"])
-        print(f"logging DoS verdicts to {path}")
+
+def open_verdict_log(dos_csv):
+    """Open the DoS verdict CSV and write its header, or (None, None)."""
+    if not dos_csv:
+        return None, None
+    path = os.path.expanduser(dos_csv)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    f = open(path, "w", newline="")
+    w = csv.writer(f)
+    w.writerow(["seq", "unix_time", "result", "load_level"])
+    print(f"logging DoS verdicts to {path}")
+    return w, f
+
+
+def log_verdict(w, f, seq, result, load_level):
+    if w:
+        w.writerow([seq, f"{time.time():.3f}", result, load_level])
+        f.flush()
+
+
+def serve(conn, args, vw, vf):
+    """
+    Handle one CA connection.
+    Returns True to reconnect (benchmark: CA finished a run) or None to stop
+    the verifier (enroll done, DoS run done, denial, or quit).
+    """
+    while True:
+        if args.enroll:
+            cmd = "enroll"
+        elif args.auto:
+            time.sleep(0.2)
+            cmd = "attest"
+        else:
+            cmd = input("Command [enroll / attest / quit]: ").strip()
+            if cmd == "quit":
+                return None
+            if cmd not in ("enroll", "attest"):
+                continue
+
+        try:
+            result = attest(conn, args.state, cmd == "enroll", args.file)
+            send_msg(conn, result.encode())
+            print(f"  -> {result}")
+        except (ConnectionError, OSError) as e:
+            if args.dos:
+                # A timeout/drop under load: this attest and every remaining
+                # one count as denied. Stop the run (no reconnect = no hang).
+                print(f"  -> denied: {e}")
+                while args.done < args.count:
+                    log_verdict(vw, vf, args.done, "TIMEOUT/LOST", args.load_level)
+                    args.done += 1
+                return None
+            return True                # benchmark: CA ended its run, reconnect
+        except ValueError as e:
+            print(f"  -> ERROR: {e}")
+            continue
+
+        if args.enroll:
+            print("  enroll done, stopping the verifier")
+            return None
+        if args.dos:
+            log_verdict(vw, vf, args.done, result.split(":")[0], args.load_level)
+        args.done += 1
+        if args.count and args.done >= args.count:
+            print(f"  done: {args.done} attests")
+            return None
+
+
+def main():
+    args = parse_args()
+    vw, vf = open_verdict_log(args.dos_csv)
 
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("0.0.0.0", args.port))
     srv.listen(1)
 
-    done = 0
-    need_enroll = args.auto and args.auto_enroll
-
     while True:
         print(f"Waiting for the attester on port {args.port}...")
         conn, addr = srv.accept()
         print(f"Attester connected from {addr[0]}")
-        conn.settimeout(args.timeout)   # max wait for an answer from the fTPM
-
+        conn.settimeout(args.timeout)
         with conn:
-            while True:
-                if args.auto:
-                    time.sleep(0.2)          # small gap between requests
-                    cmd = "enroll" if need_enroll else "attest"
-                    need_enroll = False
-                else:
-                    cmd = input("Command [enroll / attest / quit]: ").strip()
-                if cmd == "quit":
-                    return
-                if cmd not in ("enroll", "attest"):
-                    continue
-                is_attest = (cmd == "attest")
-                is_enroll = (cmd == "enroll")
-                try:
-                    result = attest(conn, args.state, is_enroll, files)
-                    send_msg(conn, result.encode())
-                    print(f"  -> {result}")
-
-                except (ConnectionError, OSError) as e:
-                    # Timeout or drop -> this attest is denied. Record it and
-                    # keep going, but the stream may be mid-message, so drop
-                    # this connection and wait for the CA to reconnect for the
-                    # next attest rather than reading stale bytes.
-                    print(f"  -> denied: {e}")
-                    if vwriter and is_attest:
-                        vwriter.writerow([done, f"{time.time():.3f}",
-                                          "TIMEOUT/LOST", args.load_level])
-                        vfile.flush()
-                    if is_attest:
-                        done += 1
-                        if args.count and done >= args.count:
-                            print(f"  done: {done} attests")
-                            return
-                    break    # leave inner loop -> outer loop re-accepts the CA
-
-                except ValueError as e:
-                    print(f"  -> ERROR: {e}")
-                    continue
-
-                if vwriter and is_attest:
-                    vwriter.writerow([done, f"{time.time():.3f}",
-                                      result.split(':')[0], args.load_level])
-                    vfile.flush()
-                if is_attest:
-                    done += 1
-                    if args.count and done >= args.count:
-                        print(f"  done: {done} attests")
-                        return
+            if serve(conn, args, vw, vf) is None:
+                return
 
 
 if __name__ == "__main__":

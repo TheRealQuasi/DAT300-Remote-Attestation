@@ -16,16 +16,17 @@
 #   results  : $DIR/results/ca_load<N>.csv  (= ~/optee/dos/results on the PC)
 
 DIR=$(cd "$(dirname "$0")" && pwd)
-REQ=${1:-20}
-IP=${2:-10.0.2.2}
-PORT=${3:-5000}
-LEVELS=${LEVELS:-"0"}
-
-TCTI=${TCTI:-device:/dev/tpmrm0}
-LOAD=${LOAD:-pcrread}
 CA=${CA:-optee_example_ra_ftpm}      # optee_examples installs the CA into /usr/bin
 OUT=${OUT:-$DIR/results}
+LEVELS=${LEVELS:-"0 2 4"}
+
+TCTI=${TCTI:-device:/dev/tpmrm0}
 AK_CTX=${AK_CTX:-/tmp/ftpm-dos-ak.ctx}
+LOAD=${LOAD:-pcrread}
+
+REQ=${1:-5}
+IP=${2:-10.0.2.2}
+PORT=${3:-5000}
 
 # ---- pick the load command from LOAD (TOOL/ARGS still override) -----------
 if [ "$LOAD" = "quote" ]; then
@@ -130,7 +131,7 @@ for LEVEL in $LEVELS; do
     # CA logs one bench row per quote INCLUDING the enroll, so count REQ+1:
     # enroll (seq 0) + REQ attests. The CA exits itself after that many.
     # > /dev/null: console printing is slow in QEMU.
-    BENCH_OUT="$CSV" BENCH_REQUESTS=$((REQ + 1)) "$CA" "$IP" "$PORT" >/dev/null
+    BENCH_OUT="$CSV" BENCH_REQUESTS=$((REQ)) "$CA" "$IP" "$PORT" >/dev/null
     echo "  done -> $CSV"
 
     stop_load
