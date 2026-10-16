@@ -1,7 +1,7 @@
 #!/bin/bash
 # deploy.sh - copy this repo's files into the OP-TEE tree.
 # Run from anywhere:  ./deploy.sh        (OP-TEE in another place: OPTEE=/path ./deploy.sh)
-set -e
+set -eu
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 OPTEE="${OPTEE:-$HOME/optee}"
@@ -30,6 +30,12 @@ rm -rf "$OPTEE/optee_examples/ra-ftpm"
 cp -r "$REPO/FTPM/ra-ftpm" "$OPTEE/optee_examples/"
 echo "FTPM/ra-ftpm              		-> $OPTEE/optee_examples/ra-ftpm/"
 
+# enroll script -> ~/optee/enroll  (= /mnt/host/enroll inside QEMU)
+mkdir -p "$OPTEE/enroll"
+cp "$REPO/FTPM/ftpm-shells/ftpm-enroll.sh" "$OPTEE/enroll/"
+chmod +x "$OPTEE/enroll/ftpm-enroll.sh"
+echo "FTPM/ftpm-shells/ftpm-enroll.sh  	-> $OPTEE/enroll/"
+
 # benchmark script -> ~/optee/benchmark  (= /mnt/host/benchmark inside QEMU)
 mkdir -p "$OPTEE/benchmark"
 cp "$REPO/FTPM/ftpm-shells/ftpm-benchmark.sh" "$OPTEE/benchmark/"
@@ -38,12 +44,9 @@ echo "FTPM/ftpm-shells/ftpm-benchmark.sh  	-> $OPTEE/benchmark/"
 
 # DoS script -> ~/optee/dos  (= /mnt/host/dos inside QEMU)
 mkdir -p "$OPTEE/dos"
-cp "$REPO/FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos.sh" "$OPTEE/dos/"
-cp "$REPO/FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos-benchmark.sh" "$OPTEE/dos/"
+cp "$REPO/FTPM/ftpm-shells/ftpm-dos.sh" "$OPTEE/dos/"
 chmod +x "$OPTEE/dos/ftpm-dos.sh"
-chmod +x "$OPTEE/dos/ftpm-dos-benchmark.sh"
-echo "FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos.sh  	-> $OPTEE/dos/"
-echo "FTPM/ftpm-shells/ftpm-dos-shells/ftpm-dos-benchmark.sh  	-> $OPTEE/dos/"
+echo "FTPM/ftpm-shells/ftpm-dos.sh  		-> $OPTEE/dos/"
 
 # DEPLOY TPM
 # cp -r "$REPO/TPM/..." "$OPTEE/..."

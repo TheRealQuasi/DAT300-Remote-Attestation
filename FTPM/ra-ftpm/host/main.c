@@ -368,6 +368,13 @@ int main(int argc, char *argv[])
 		}
 
 		close(fd);
+		
+		const char *enroll = getenv("ENROLL");
+		if (bench_on() || (enroll && strcmp(enroll, "True") == 0)) {
+			printf("Verifier disconnected, run complete\n");
+			return 0;
+		}
+
 		printf("Connection lost, reconnecting in 3 s...\n");
 		sleep(3);
 	}

@@ -23,7 +23,8 @@ printed as the overhead attestation adds:
     python3 ftpm-benchmark-analyzer.py sec/run*.csv --baseline base/run*.csv
 
 Options:
-    --warmup N   discard the first N requests of each run (default 10)
+    --warmup N   discard the first N requests of each run (default 0;
+                 pass 1-2 to drop cold-start outliers on short runs)
     --cores C    also report U x C (undo the all-cores averaging)
     --out FILE   also write the text summary there
     --plot FILE  write the diagram (default summary.png; '' to skip)
@@ -43,6 +44,8 @@ import sys
 # Used when no CSV paths are given on the command line.
 DEFAULT_GLOB = "~/optee/benchmark/results/run*.csv"
 
+# Used when no output paths are given on the command line.
+OUT_DIR = "~/shared/DAT300-Remote-Attestation/FTPM/results"
 
 def natural_key(path):
     """Sort run10 after run2, not before it."""
@@ -108,6 +111,68 @@ def collect(paths, warmup):
     return dict(per_run=per_run, ta=all_ta, cpu=all_cpu,
                 busy=busy_all, total=total_all, rss_peak=rss_peak)
 
+def delta_line(name, sec_vals, base_vals, unit):
+    s = pct(sorted(sec_vals), 50)
+    b = pct(sorted(base_vals), 50)
+    pctg = f"  ({(s - b) / b * 100:+.1f}%)" if b else ""
+    return (f"{name} baseline={b:.4g}{unit}  with-sec={s:.4g}{unit}  "
+            f"delta={s - b:+.4g}{unit}{pctg}")
+
+def ensure_dir(path):
+    path = os.path.expanduser(path)
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    return path
+
+def make_plot(per_run, path):
+    try:
+        import matplotlib
+        matplotlib.use("Agg")           # no display needed, write straight to file
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("\n(matplotlib not installed - skipping the diagram; "
+              "run 'pip install --break-system-packages matplotlib' to get it)",
+              file=sys.stderr)
+        return
+
+    runs = [(label, s) for label, s, note in per_run if note is None]
+    labels = [label for label, _ in runs]
+    ta_data = [s["ta"] for _, s in runs]
+    cpu_data = [s["cpu"] for _, s in runs]
+    u_data = [s["u"] if s["u"] is not None else 0 for _, s in runs]
+    x = range(len(labels))
+    has_cpu = all(cpu_data)
+
+    n = 3 if has_cpu else 2
+    fig, axes = plt.subplots(n, 1, figsize=(max(7, len(labels) * 0.9), 3 * n),
+                             sharex=True)
+    ax = list(axes)
+
+    ax[0].boxplot(ta_data, tick_labels=labels, showfliers=False)
+    ax[0].set_ylabel("T_FTPM (ms)")
+    ax[0].set_title("Wall-clock fTPM request time per run")
+    ax[0].grid(True, axis="y", alpha=0.3)
+
+    i = 1
+    if has_cpu:
+        ax[i].boxplot(cpu_data, tick_labels=labels, showfliers=False)
+        ax[i].set_ylabel("T_CPU (ms)")
+        ax[i].set_title("CA-process CPU time per run")
+        ax[i].grid(True, axis="y", alpha=0.3)
+        i += 1
+
+    ax[i].bar(x, u_data)
+    ax[i].set_xticks(list(x))
+    ax[i].set_xticklabels(labels, rotation=45, ha="right")
+    ax[i].set_ylabel("U (busy / total)")
+    ax[i].set_title("System CPU utilisation per run (pooled)")
+    ax[i].grid(True, axis="y", alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+    print(f"\ndiagram written to {path}")
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
@@ -120,10 +185,10 @@ def main():
                     help="discard the first N requests of each run (default 0)")
     ap.add_argument("--cores", type=int, default=0,
                     help="also report U x this core count (undo all-cores averaging)")
-    ap.add_argument("--out", default="results/summery.txt",
-                    help="also write the text summary here (default results/summery.txt)")
-    ap.add_argument("--plot", default="results/summery.png",
-                    help="write the diagram here (default results/summery.png; '' to skip)")
+    ap.add_argument("--out", default=OUT_DIR + "/benchmark-summary.txt",
+                    help="also write the text summary here")
+    ap.add_argument("--plot", default=OUT_DIR + "/benchmark-summary.png",
+                    help="write the plot here ('' to skip)")
     a = ap.parse_args()
 
     # No files given -> use the default results glob (expanded here, since the
@@ -180,78 +245,12 @@ def main():
     text = "\n".join(lines)
     print(text)
     if a.out:
-        ensure_dir(a.out)
-        with open(a.out, "w") as f:
+        out_path = ensure_dir(a.out)
+        with open(out_path, "w") as f:
             f.write(text + "\n")
 
     if a.plot and any(note is None for _, _, note in agg["per_run"]):
-        ensure_dir(a.plot)
-        make_plot(agg["per_run"], a.plot)
-
-
-def ensure_dir(path):
-    """Create the parent directory of an output file if it doesn't exist."""
-    d = os.path.dirname(path)
-    if d:
-        os.makedirs(d, exist_ok=True)
-
-
-def delta_line(name, sec_vals, base_vals, unit):
-    s = pct(sorted(sec_vals), 50)
-    b = pct(sorted(base_vals), 50)
-    pctg = f"  ({(s - b) / b * 100:+.1f}%)" if b else ""
-    return (f"{name} baseline={b:.4g}{unit}  with-sec={s:.4g}{unit}  "
-            f"delta={s - b:+.4g}{unit}{pctg}")
-
-
-def make_plot(per_run, path):
-    try:
-        import matplotlib
-        matplotlib.use("Agg")           # no display needed, write straight to file
-        import matplotlib.pyplot as plt
-    except ImportError:
-        print("\n(matplotlib not installed - skipping the diagram; "
-              "run 'pip install --break-system-packages matplotlib' to get it)",
-              file=sys.stderr)
-        return
-
-    runs = [(label, s) for label, s, note in per_run if note is None]
-    labels = [label for label, _ in runs]
-    ta_data = [s["ta"] for _, s in runs]
-    cpu_data = [s["cpu"] for _, s in runs]
-    u_data = [s["u"] if s["u"] is not None else 0 for _, s in runs]
-    x = range(len(labels))
-    has_cpu = all(cpu_data)
-
-    n = 3 if has_cpu else 2
-    fig, axes = plt.subplots(n, 1, figsize=(max(7, len(labels) * 0.9), 3 * n),
-                             sharex=True)
-    ax = list(axes)
-
-    ax[0].boxplot(ta_data, tick_labels=labels, showfliers=False)
-    ax[0].set_ylabel("T_FTPM (ms)")
-    ax[0].set_title("Wall-clock fTPM request time per run")
-    ax[0].grid(True, axis="y", alpha=0.3)
-
-    i = 1
-    if has_cpu:
-        ax[i].boxplot(cpu_data, tick_labels=labels, showfliers=False)
-        ax[i].set_ylabel("T_CPU (ms)")
-        ax[i].set_title("CA-process CPU time per run")
-        ax[i].grid(True, axis="y", alpha=0.3)
-        i += 1
-
-    ax[i].bar(x, u_data)
-    ax[i].set_xticks(list(x))
-    ax[i].set_xticklabels(labels, rotation=45, ha="right")
-    ax[i].set_ylabel("U (busy / total)")
-    ax[i].set_title("System CPU utilisation per run (pooled)")
-    ax[i].grid(True, axis="y", alpha=0.3)
-
-    fig.tight_layout()
-    fig.savefig(path, dpi=120)
-    print(f"\ndiagram written to {path}")
-
+        make_plot(agg["per_run"], ensure_dir(a.plot))
 
 if __name__ == "__main__":
     main()

@@ -14,12 +14,13 @@
 # commands and accept the CA reconnecting between runs.
 
 DIR=$(cd "$(dirname "$0")" && pwd)
-RUNS=${1:-2}
+CA=${CA:-optee_example_ra_ftpm}   # optee_examples installs the CA into /usr/bin
+OUT=${OUT:-$DIR/results}
+
+RUNS=${1:-3}
 REQ=${2:-5}
 IP=${3:-10.0.2.2}
 PORT=${4:-5000}
-CA=${CA:-optee_example_ra_ftpm}   # optee_examples installs the CA into /usr/bin
-OUT=${OUT:-$DIR/results}
 
 if ! command -v "$CA" >/dev/null 2>&1; then
 	echo "CA '$CA' not found (set CA=/path/to/binary)"
@@ -32,8 +33,7 @@ for i in $(seq 1 "$RUNS"); do
 	echo "run $i/$RUNS ($REQ requests) -> $OUT/run$i.csv"
 	# > /dev/null: discard the CA's normal output (console printing is slow in QEMU)
 	BENCH_OUT="$OUT/run$i.csv" BENCH_REQUESTS="$REQ" "$CA" "$IP" "$PORT" > /dev/null
-	sleep 2
+	sleep 1
 done
 
 echo "done -> $OUT"
-echo "On your PC: python3 FTPM/ftpm-analyzers/ftpm-benchmark-analyzer.py"
