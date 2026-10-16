@@ -213,7 +213,7 @@ def parse_args():
     args.file = args.file or [DEFAULT_PROTECTED_FILE]
     args.auto = args.enroll or args.benchmark or args.dos
     args.done = 0
-    args.count = args.requests * args.runs             # unlimited; the CA ends each run
+    args.count = args.requests * args.runs
     if args.dos and args.dos_csv is None:
         args.dos_csv = f"{DOS_OUT_DIR}/verifier_load{args.load_level}.csv"
     return args

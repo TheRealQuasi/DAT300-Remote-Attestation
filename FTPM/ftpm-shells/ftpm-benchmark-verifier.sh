@@ -15,9 +15,21 @@
 # ---- environment toggles (lowercase true/false) --------------------------
 USE_SSH=${USE_SSH:-false}
 USE_RPI4=${USE_RPI4:-false}
+
 RPI4=${RPI4:-rpi4-optee}
 RPI4_PATH=${RPI4_PATH:-$HOME/shared/DAT300-Remote-Attestation/RPi4}
-CSV_PATH=${CSV_PATH:-$RPI4_PATH/results}
+RESULTS_PATH=${RESULTS_PATH:-$RPI4_PATH/results}
+
+# /dev/tpmrm0 is the default for the RPi4's TPM
+# /dev/tpmrm1 is the default for the RPi4's fTPM
+DEVICE=${DEVICE:-/dev/tpmrm1}
+if [ "$DEVICE" = "/dev/tpmrm0" ]; then
+    RESULTS_PATH="$RESULTS_PATH/tpm"
+else
+    RESULTS_PATH="$RESULTS_PATH/ftpm"
+fi
+
+CSV_PATH=${CSV_PATH:-$RESULTS_PATH/benchmark-data}
 
 # ---- program defaults ----------------------------------------------------
 ANALYZER=${ANALYZER:-FTPM/ftpm-analyzers/ftpm-benchmark-analyzer.py}
@@ -25,8 +37,8 @@ VERIFIER=${VERIFIER:-FTPM/ra-ftpm/verifier.py}
 PROTECTED=${PROTECTED:-/root/protected.txt}
 TIMEOUT=${TIMEOUT:-120}
 
-RUNS=${RUNS:-10}     # runs (passed to the verifier)
-REQ=${REQ:-20}       # requests per run (passed to the verifier)
+RUNS=${1:-10}     # runs (passed to the verifier)
+REQ=${2:-20}       # requests per run (passed to the verifier)
 
 # ---- run the verifier (benchmark mode, unlimited; Ctrl-C when done) -------
 echo "benchmark verifier: waiting for the attester (Ctrl-C to stop)"
@@ -36,12 +48,12 @@ python3 "$VERIFIER" --file "$PROTECTED" --benchmark \
 # ---- collect + analyse ---------------------------------------------------
 if [ "$USE_SSH" = "true" ]; then
     # Results are on the Pi: pull them over scp, then analyse those.
+    mkdir -p "$RESULTS_PATH"
     mkdir -p "$CSV_PATH"
-    mkdir -p "$CSV_PATH"/data
-    scp "$RPI4":~/results/* "$CSV_PATH"/data/
+    scp "$RPI4":~/results/run*.csv "$CSV_PATH"/
 
     echo "Analyzing results..."
-    python3 "$ANALYZER" "$CSV_PATH"/data/run*.csv --out "$CSV_PATH"/benchmark-summary.txt --plot "$CSV_PATH"/benchmark-summary.png
+    python3 "$ANALYZER" "$CSV_PATH"/run*.csv --out "$RESULTS_PATH"/benchmark-summary.txt --plot "$RESULTS_PATH"/benchmark-summary.png
     echo "done -> $CSV_PATH"
 elif [ "$USE_RPI4" = "true" ]; then
     # TBA: For when actually using TCP.

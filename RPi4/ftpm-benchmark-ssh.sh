@@ -19,12 +19,13 @@ OUT=${OUT:-$DIR/results}
 
 # /dev/tpmrm0 is the default for the RPi4's TPM
 # /dev/tpmrm1 is the default for the RPi4's fTPM
-DEVICE=${3:-/dev/tpmrm1}
+DEVICE=${DEVICE:-/dev/tpmrm1}
 
 RUNS=${1:-10}
 REQ=${2:-20}
 IP=${3:-127.0.0.1}
 PORT=${4:-5000}
+
 
 if ! command -v "$CA" >/dev/null 2>&1; then
 	echo "CA '$CA' not found (set CA=/path/to/binary)"
