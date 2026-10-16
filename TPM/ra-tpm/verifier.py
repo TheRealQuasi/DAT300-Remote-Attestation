@@ -24,6 +24,8 @@ then type commands here:
              (saves its AK, boot PCRs 0-7 and each file's hash to
              enrolled_device.json)
     attest   send a fresh nonce, check the quote against the enrollment
+    test-replay  simulate replaying a previously accepted response; the
+                 stale quote should be rejected because its nonce is old
     quit     stop the verifier
 
 Needs: sudo apt install python3-cryptography
@@ -131,24 +133,21 @@ def sig_to_der(blob):
 
 
 # ----------------------------------------------------------- checking
-def attest(conn, state_file, enroll, paths):
-    """Send nonce + file list, check the answer."""
-    nonce = secrets.token_bytes(32)
-    send_msg(conn, CMD_ATTEST + bytes([len(nonce)]) + nonce
-             + "\n".join(paths).encode())
-    print(f"  sent nonce {nonce.hex()[:16]}... + {len(paths)} files")
+def receive_attestation(conn):
+    """Read all five messages that make up one attestation response."""
+    return tuple(recv_msg(conn) for _ in range(5))
 
-    ak_blob = recv_msg(conn)
-    quote = recv_msg(conn)
-    sig = recv_msg(conn)
-    pcr_blob = recv_msg(conn)
+
+def check_attestation(nonce, response, state_file, enroll, paths):
+    """Validate an attestation response against the nonce for this request."""
+    ak_blob, quote, sig, pcr_blob, hash_blob = response
     if len(pcr_blob) != NUM_PCRS * 32:
         return "FAIL: wrong number of PCR values"
     pcrs = [pcr_blob[i * 32:(i + 1) * 32] for i in range(NUM_PCRS)]
-    hash_blob = recv_msg(conn)
     if len(hash_blob) != len(paths) * 32:
         return "FAIL: wrong number of file hashes"
-    hashes_now = [hash_blob[i * 32:(i + 1) * 32] for i in range(len(paths))]
+    hashes_now = [hash_blob[i * 32:(i + 1) * 32]
+                  for i in range(len(paths))]
 
     # Is the quote really signed by this AK?
     try:
@@ -162,11 +161,11 @@ def attest(conn, state_file, enroll, paths):
     if q_nonce != nonce:
         return "FAIL: wrong nonce (replayed quote?)"
 
-    # Are the PCR values we were sent the ones the fTPM signed?
+    # Are the PCR values we were sent the ones the TPM signed?
     if hashlib.sha256(b"".join(pcrs)).digest() != pcr_digest:
         return "FAIL: PCR values don't match the signed quote"
 
-    # Are the file hashes the ones the fTPM extended, after OUR nonce?
+    # Are the file hashes the ones the TPM extended, after OUR nonce?
     if pcrs[8] != expected_pcr16(nonce, hashes_now):
         return "FAIL: file hashes don't match the signed PCR 16"
 
@@ -197,6 +196,26 @@ def attest(conn, state_file, enroll, paths):
     return "TRUSTED"
 
 
+def attest(conn, state_file, enroll, paths, replay_response=None):
+    """Send a fresh challenge and validate the live or cached response.
+
+    During a replay test, the real response to the fresh challenge is read and
+    discarded to keep the stream synchronized, while the cached response is
+    passed to the exact same validation logic. Returns (result, live_response).
+    """
+    nonce = secrets.token_bytes(32)
+    send_msg(conn, CMD_ATTEST + bytes([len(nonce)]) + nonce
+             + "\n".join(paths).encode())
+    print(f"  sent nonce {nonce.hex()[:16]}... + {len(paths)} files")
+
+    live_response = receive_attestation(conn)
+    response_to_check = (replay_response if replay_response is not None
+                         else live_response)
+    result = check_attestation(nonce, response_to_check, state_file,
+                               enroll, paths)
+    return result, live_response
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=5000)
@@ -213,21 +232,50 @@ def main():
     srv.listen(1)
 
     while True:
+        done = 0
         print(f"Waiting for the attester on port {args.port}...")
         conn, addr = srv.accept()
         print(f"Attester connected from {addr[0]}")
         conn.settimeout(120)   # max wait for an answer from the fTPM
 
         with conn:
+            # Keep one previously accepted response in memory for test-replay.
+            # It is cleared when this attester disconnects.
+            last_accepted_response = None
             while True:
-                cmd = input("Command [enroll / attest / quit]: ").strip()
+                cmd = input(
+                    "Command [enroll / attest / test-replay / quit]: "
+                ).strip()
                 if cmd == "quit":
                     return
-                if cmd not in ("enroll", "attest"):
+                if cmd not in ("enroll", "attest", "test-replay"):
                     continue
                 try:
-                    result = attest(conn, args.state, cmd == "enroll",
-                                    files)
+                    if cmd == "test-replay":
+                        if last_accepted_response is None:
+                            print("  -> Cannot test replay yet: run 'enroll' "
+                                  "or a successful 'attest' first.")
+                            continue
+
+                        result, _ = attest(
+                            conn, args.state, False, files,
+                            replay_response=last_accepted_response)
+                        send_msg(conn, result.encode())
+                        if result == "FAIL: wrong nonce (replayed quote?)":
+                            print("  -> REPLAY TEST PASSED: stale response "
+                                  "rejected by the nonce check")
+                        elif result == "TRUSTED":
+                            print("  -> REPLAY TEST FAILED: stale response "
+                                  "was accepted")
+                        else:
+                            print("  -> REPLAY TEST INCONCLUSIVE: response "
+                                  f"rejected for another reason: {result}")
+                        continue
+
+                    result, live_response = attest(
+                        conn, args.state, cmd == "enroll", files)
+                    if result == "TRUSTED" or result.startswith("ENROLLED ("):
+                        last_accepted_response = live_response
                     send_msg(conn, result.encode())
                     print(f"  -> {result}")
                 except (ConnectionError, OSError) as e:

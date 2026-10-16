@@ -7,6 +7,13 @@ Three non-interactive modes (pick one); without any, it is interactive:
     --benchmark   send attests nonstop, no log          (CA drives run length)
     --dos         send --count attests, log each verdict to a CSV, then stop
 
+Interactive commands:
+    enroll        enroll this device
+    attest        verify a fresh attestation
+    test-replay   submit a fresh challenge but validate the previous accepted
+                  response; the stale nonce should make the replay fail
+    quit          exit the verifier
+
 The CA drives the run: it exits after its BENCH_REQUESTS (benchmark/DoS) or
 when this verifier closes the connection. This verifier never enrolls inside
 a benchmark/DoS run - enroll separately with --enroll first.
@@ -123,24 +130,21 @@ def sig_to_der(blob):
 
 
 # ----------------------------------------------------------- checking
-def attest(conn, state_file, enroll, paths):
-    """Send nonce + file list, check the answer."""
-    nonce = secrets.token_bytes(32)
-    send_msg(conn, CMD_ATTEST + bytes([len(nonce)]) + nonce
-             + "\n".join(paths).encode())
-    print(f"  sent nonce {nonce.hex()[:16]}... + {len(paths)} files")
+def receive_attestation(conn):
+    """Read one complete attestation response from the connected attester."""
+    return tuple(recv_msg(conn) for _ in range(5))
 
-    ak_blob = recv_msg(conn)
-    quote = recv_msg(conn)
-    sig = recv_msg(conn)
-    pcr_blob = recv_msg(conn)
+
+def check_attestation(nonce, response, state_file, enroll, paths):
+    """Validate an attestation response against this request's nonce."""
+    ak_blob, quote, sig, pcr_blob, hash_blob = response
     if len(pcr_blob) != NUM_PCRS * 32:
         return "FAIL: wrong number of PCR values"
     pcrs = [pcr_blob[i * 32:(i + 1) * 32] for i in range(NUM_PCRS)]
-    hash_blob = recv_msg(conn)
     if len(hash_blob) != len(paths) * 32:
         return "FAIL: wrong number of file hashes"
-    hashes_now = [hash_blob[i * 32:(i + 1) * 32] for i in range(len(paths))]
+    hashes_now = [hash_blob[i * 32:(i + 1) * 32]
+                  for i in range(len(paths))]
 
     try:
         ak_to_key(ak_blob).verify(sig_to_der(sig), quote,
@@ -178,6 +182,26 @@ def attest(conn, state_file, enroll, paths):
         if known["files"].get(p) != h.hex():
             return f"FAIL: {p} has been modified (or is missing)"
     return "TRUSTED"
+
+
+def attest(conn, state_file, enroll, paths, replay_response=None):
+    """Send a fresh challenge and validate the live or a replayed response.
+
+    In replay-test mode, consume the current live response to keep the socket
+    synchronized, but validate a previously accepted response against this
+    request's fresh nonce. Returns (result, live_response).
+    """
+    nonce = secrets.token_bytes(32)
+    send_msg(conn, CMD_ATTEST + bytes([len(nonce)]) + nonce
+             + "\n".join(paths).encode())
+    print(f"  sent nonce {nonce.hex()[:16]}... + {len(paths)} files")
+
+    live_response = receive_attestation(conn)
+    response_to_check = (replay_response if replay_response is not None
+                         else live_response)
+    result = check_attestation(nonce, response_to_check, state_file,
+                               enroll, paths)
+    return result, live_response
 
 
 # ----------------------------------------------------------- driver
@@ -244,6 +268,8 @@ def serve(conn, args, vw, vf):
     Returns True to reconnect (benchmark: CA finished a run) or None to stop
     the verifier (enroll done, DoS run done, denial, or quit).
     """
+    last_accepted_response = None
+
     while True:
         if args.enroll:
             cmd = "enroll"
@@ -251,15 +277,43 @@ def serve(conn, args, vw, vf):
             time.sleep(0.2)
             cmd = "attest"
         else:
-            cmd = input("Command [enroll / attest / quit]: ").strip()
+            cmd = input(
+                "Command [enroll / attest / test-replay / quit]: "
+            ).strip()
             if cmd == "quit":
                 return None
-            if cmd not in ("enroll", "attest"):
+            if cmd not in ("enroll", "attest", "test-replay"):
                 continue
 
+        if cmd == "test-replay" and last_accepted_response is None:
+            print("  -> Cannot test replay yet: run 'enroll' or a successful "
+                  "'attest' first.")
+            continue
+
         try:
-            result = attest(conn, args.state, cmd == "enroll", args.file)
+            replay_response = (last_accepted_response
+                               if cmd == "test-replay" else None)
+            result, live_response = attest(
+                conn, args.state, cmd == "enroll", args.file,
+                replay_response=replay_response)
             send_msg(conn, result.encode())
+            if result == "TRUSTED" or result.startswith("ENROLLED ("):
+                if cmd != "test-replay":
+                    last_accepted_response = live_response
+
+            if cmd == "test-replay":
+                if result == "FAIL: wrong nonce (replayed quote?)":
+                    print("  -> REPLAY TEST PASSED: stale response rejected "
+                          "by the nonce check")
+                elif result == "TRUSTED":
+                    print("  -> REPLAY TEST FAILED: stale response was accepted")
+                else:
+                    print("  -> REPLAY TEST INCONCLUSIVE: response rejected "
+                          f"for another reason: {result}")
+                # A replay test is interactive validation, not a benchmark/DoS
+                # request, so it must not affect counters or verdict logs.
+                continue
+
             print(f"  -> {result}")
         except (ConnectionError, OSError) as e:
             if args.dos:
