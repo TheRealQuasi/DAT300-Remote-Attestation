@@ -39,10 +39,18 @@
 #include <tss2/tss2_rc.h>
 #include <tss2/tss2_tctildr.h>
 
+
+// For benchmarking
+#include "bench.h"
+static struct bench b;
+
 #define CMD_ATTEST  'A'
 #define MAX_CMD     4096                  /* max size of an attest command */
 #define NUM_PCRS    9                     /* PCRs 0-7 and 16 */
 #define MAX_FILES   32
+
+#define IMA_LOG  "/sys/kernel/security/ima/binary_runtime_measurements"
+#define MAX_LOG  (16u * 1024 * 1024)
 
 static void check(TSS2_RC rc, const char *what)
 {
@@ -139,7 +147,8 @@ static void measure_file(ESYS_CONTEXT *esys, const char *path,
 	for (uint32_t i = 0; i < d->count; i++)
 		if (d->digests[i].hashAlg == TPM2_ALG_SHA256)
 			memcpy(hash_out, d->digests[i].digest.sha256, 32);
-	printf("  hashed %s%s\n", path, f ? "" : " (MISSING)");
+	if (!bench_on())
+		printf("  hashed %s%s\n", path, f ? "" : " (MISSING)");
 	Esys_Free(d);
 }
 
@@ -169,6 +178,25 @@ static void read_pcrs(ESYS_CONTEXT *esys, uint8_t out[NUM_PCRS][32])
 		Esys_Free(got);
 		Esys_Free(vals);
 	}
+}
+
+static uint8_t *read_ima_log(size_t *len)
+{
+	size_t cap = 65536, n = 0, r;
+	uint8_t *buf = malloc(cap);
+	FILE *f = fopen(IMA_LOG, "rb");
+
+	if (!f || !buf) { perror("open IMA log"); exit(1); }
+	while ((r = fread(buf + n, 1, cap - n, f)) > 0) {
+		n += r;
+		if (n == cap) {
+			if (cap >= MAX_LOG) { fprintf(stderr, "IMA log too big\n"); exit(1); }
+			buf = realloc(buf, cap *= 2);
+		}
+	}
+	fclose(f);
+	*len = n;
+	return buf;
 }
 
 /* ---------------- main ---------------- */
@@ -216,19 +244,35 @@ int main(int argc, char *argv[])
 		.pcrSelections[0] = {
 			.hash = TPM2_ALG_SHA256,
 			.sizeofSelect = 3,
-			.pcrSelect = { 0xff, 0x00, 0x01 },
+			// .pcrSelect = { 0xff, 0x00, 0x01 },
 		},
 	};
 	TPMT_SIG_SCHEME scheme = { .scheme = TPM2_ALG_NULL }; /* use AK's */
 
-	if (argc != 3) {
-		fprintf(stderr, "Usage: %s <verifier-ip> <port>\n", argv[0]);
+	const char *host   = "127.0.0.1";
+	const char *port   = "5000";
+	const char *device = "/dev/tpmrm1";     /* default: Pi fTPM */
+
+	if (argc >= 3) {
+		host = argv[1];
+		port = argv[2];
+	}
+	if (argc == 4) {
+		device = argv[3];                   /* e.g. /dev/tpmrm0 on QEMU */
+	} else if (argc != 1 && argc != 3) {
+		fprintf(stderr, "Usage: %s [<verifier-ip> <port> [<tpm-device>]]\n", argv[0]);
 		return 1;
 	}
+
+	/* build "device:<path>" for the TCTI */
+	char module[128];
+	snprintf(module, sizeof(module), "device:%s", device);
+
 	setvbuf(stdout, NULL, _IOLBF, 0);   /* print each line immediately */
 
 	/* Open the fTPM and create the AK once, at start-up. */
-	check(Tss2_TctiLdr_Initialize("device:/dev/tpmrm0", &tcti), "open TPM");
+	// check(Tss2_TctiLdr_Initialize("device: %", &tcti), "open TPM");
+	check(Tss2_TctiLdr_Initialize(module, &tcti), "open TPM");
 	check(Esys_Initialize(&esys, tcti, NULL), "Esys_Initialize");
 	check(Esys_CreatePrimary(esys, ESYS_TR_RH_ENDORSEMENT,
 				 ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
@@ -237,12 +281,11 @@ int main(int argc, char *argv[])
 	      "create AK");
 	check(Tss2_MU_TPM2B_PUBLIC_Marshal(ak_pub, ak_buf, sizeof(ak_buf),
 					   &ak_len), "encode AK");
-	printf("TPM ready, attestation key created\n");
+	printf("fTPM ready, attestation key created\n");
 
 	/* Outer loop: (re)connect to the verifier. */
 	for (;;) {
-		printf("Connecting to verifier %s:%s...\n", argv[1], argv[2]);
-		int fd = connect_to(argv[1], argv[2]);
+		int fd = connect_to(host, port);
 
 		if (fd < 0) {
 			printf("Verifier not reachable, retrying in 3 s...\n");
@@ -289,6 +332,11 @@ int main(int argc, char *argv[])
 			 *    PCR16 = SHA256(PCR16 || SHA256(nonce))
 			 *    PCR16 = SHA256(PCR16 || SHA256(file)) for each file
 			 */
+
+			// Benchmark: First fTPM command of this request
+			bench_start(&b);
+			// ---------------------------------------
+
 			check(Esys_PCR_Reset(esys, ESYS_TR_PCR16, ESYS_TR_PASSWORD,
 					     ESYS_TR_NONE, ESYS_TR_NONE),
 			      "reset PCR 16");
@@ -314,6 +362,11 @@ int main(int argc, char *argv[])
 							     &sig_len),
 			      "encode signature");
 			read_pcrs(esys, pcr_vals);
+
+			// Benchmark: Response to the last fTPM command
+			bench_stop(&b);
+			// ---------------------------------------
+
 			printf("fTPM signed a quote over PCRs 0-7 + 16\n");
 
 			/* 4. Send AK, quote, signature, PCRs and file hashes. */
@@ -328,6 +381,10 @@ int main(int argc, char *argv[])
 			if (!ok)
 				break;                  /* connection lost */
 
+			// Benchmark: Log the benchmark
+			bench_log(&b);
+			// ---------------------------------------
+
 			/* 5. Print the verdict. */
 			vlen = recv_msg(fd, (uint8_t *)verdict,
 					sizeof(verdict) - 1);
@@ -335,9 +392,21 @@ int main(int argc, char *argv[])
 				break;                  /* connection lost */
 			verdict[vlen] = '\0';
 			printf("Verifier says: %s\n", verdict);
+
+			if (bench_done(&b)) {
+				close(fd);
+				return 0;
+			}
 		}
 
 		close(fd);
+
+		const char *enroll = getenv("ENROLL");
+		if (bench_on() || (enroll && strcmp(enroll, "True") == 0)) {
+			printf("Verifier disconnected, run complete\n");
+			return 0;
+		}
+
 		printf("Connection lost, reconnecting in 3 s...\n");
 		sleep(3);
 	}
