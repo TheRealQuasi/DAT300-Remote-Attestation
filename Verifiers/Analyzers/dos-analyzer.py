@@ -49,6 +49,9 @@ OUT_DIR = "~/shared/DAT300-Remote-Attestation/FTPM/results"
 # Verifier results that mean "this request was NOT answered in time".
 DENIED_TAGS = {"TIMEOUT/LOST"}
 
+# Used when no device is specified. (title, plot, and output file names are device-specific.)
+DEVICE = "ftpm"
+
 def pct(v, p):
     """Same percentile convention as the CA-side benchmark analyzer."""
     if not v:
@@ -220,8 +223,12 @@ def make_plot(rows, path):
     ax[0].plot(xs, [s["p50"] for s in rows], "o-", label="p50")
     ax[0].plot(xs, [s["p95"] for s in rows], "s-", label="p95")
     ax[0].plot(xs, [s["p99"] for s in rows], "^-", label="p99")
-    ax[0].set_ylabel("fTPM latency (ms)")
-    ax[0].set_title("CA-side fTPM latency (completed requests) vs load")
+    if DEVICE == "tpm":
+        ax[0].set_ylabel("TPM latency (ms)")
+        ax[0].set_title("CA-side TPM latency (completed requests) vs load")
+    else:
+        ax[0].set_ylabel("fTPM latency (ms)")
+        ax[0].set_title("CA-side fTPM latency (completed requests) vs load")
     ax[0].legend()
     ax[0].grid(True, alpha=0.3)
 
@@ -261,6 +268,8 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--device", default=DEVICE,
+                    help=f"device name (default {DEVICE})")
     ap.add_argument("csv", nargs="*",
                     help="explicit CSVs (CA and/or verifier, globs ok); "
                          "sorted into the two kinds by name. Default: "
@@ -271,9 +280,9 @@ def main():
                     help=f"verifier verdict files (default {VERIFIER_GLOB})")
     ap.add_argument("--warmup", type=int, default=0,
                     help="discard the first N attests (by seq) from both sides")
-    ap.add_argument("--out", default=OUT_DIR + "/dos-summary.txt",
+    ap.add_argument("--out", default=OUT_DIR + f"/{DEVICE}-dos-summary.txt",
                     help="also write the text summary here")
-    ap.add_argument("--plot", default=OUT_DIR + "/dos-summary.png",
+    ap.add_argument("--plot", default=OUT_DIR + f"/{DEVICE}-dos-summary.png",
                     help="write the plot here ('' to skip)")
     a = ap.parse_args()
 

@@ -17,7 +17,6 @@
 
 # ---- environment toggles (lowercase true/false) --------------------------
 USE_SSH=${USE_SSH:-false}
-USE_RPI4=${USE_RPI4:-false}
 
 RPI4=${RPI4:-rpi4-optee}
 RPI4_PATH=${RPI4_PATH:-$HOME/shared/DAT300-Remote-Attestation/RPi4}
@@ -25,18 +24,18 @@ RESULTS_PATH=${RESULTS_PATH:-$RPI4_PATH/results}
 
 # /dev/tpmrm0 is the default for the RPi4's TPM
 # /dev/tpmrm1 is the default for the RPi4's fTPM
-DEVICE=${DEVICE:-/dev/tpmrm1}
-if [ "$DEVICE" = "/dev/tpmrm0" ]; then
-    RESULTS_PATH="$RESULTS_PATH/tpm"
-else
-    RESULTS_PATH="$RESULTS_PATH/ftpm"
-fi
+DEVICE_NAME=${DEVICE_NAME:-ftpm}
+RESULTS_PATH="$RESULTS_PATH/$DEVICE_NAME"
 
 CSV_PATH=${CSV_PATH:-$RESULTS_PATH/dos-data}
 
 # ---- program defaults ----------------------------------------------------
-ANALYZER=${ANALYZER:-FTPM/ftpm-analyzers/ftpm-dos-analyzer.py}
-VERIFIER=${VERIFIER:-FTPM/ra-ftpm/verifier.py}
+if [ "$DEVICE_NAME" = "tpm" ]; then
+    VERIFIER=${VERIFIER:-$HOME/shared/DAT300-Remote-Attestation/TPM/ra-tpm/verifier.py}
+else
+    VERIFIER=${VERIFIER:-$HOME/shared/DAT300-Remote-Attestation/FTPM/ra-ftpm/verifier.py}
+fi
+ANALYZER=${ANALYZER:-$HOME/shared/DAT300-Remote-Attestation/Verifiers/Analyzers/dos-analyzer.py}
 PROTECTED=${PROTECTED:-/root/protected.txt}
 TIMEOUT=${TIMEOUT:-5}
 LEVELS=${LEVELS:-"0 2 4 8 16 32"}   # load levels to sweep through
@@ -64,11 +63,10 @@ if [ "$USE_SSH" = "true" ]; then
     scp "$RPI4":~/results/ca_load*.csv "$CSV_PATH"
 
     echo "Analyzing results..."
-    python3 "$ANALYZER" "$CSV_PATH"/*.csv --out "$RESULTS_PATH"/dos-summary.txt --plot "$RESULTS_PATH"/dos-summary.png
+    python3 "$ANALYZER" "$CSV_PATH"/*.csv \
+        --out "$RESULTS_PATH"/$DEVICE_NAME-dos-summary.txt --plot "$RESULTS_PATH"/$DEVICE_NAME-dos-summary.png \
+        --device "$DEVICE_NAME"
     echo "done -> $CSV_PATH"
-elif [ "$USE_RPI4" = "true" ]; then
-    # TBA: For when actually using TCP.
-    echo "TBA: Collecting results from RPi4 over TCP (not yet implemented)"
 else
     # Results are already local (default results dir): let the analyzer find them.
     echo "Analyzing results..."

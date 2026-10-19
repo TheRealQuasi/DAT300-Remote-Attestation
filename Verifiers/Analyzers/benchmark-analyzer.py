@@ -47,6 +47,9 @@ DEFAULT_GLOB = "~/optee/benchmark/results/run*.csv"
 # Used when no output paths are given on the command line.
 OUT_DIR = "~/shared/DAT300-Remote-Attestation/FTPM/results"
 
+# Used when no device is specified. (title, plot, and output file names are device-specific.)
+DEVICE = "ftpm"
+
 def natural_key(path):
     """Sort run10 after run2, not before it."""
     nums = re.findall(r"\d+", path)
@@ -150,8 +153,12 @@ def make_plot(per_run, path):
     ax = list(axes)
 
     ax[0].boxplot(ta_data, tick_labels=labels, showfliers=False)
-    ax[0].set_ylabel("T_FTPM (ms)")
-    ax[0].set_title("Wall-clock fTPM request time per run")
+    if DEVICE == "tpm":
+        ax[0].set_ylabel("T_TPM (ms)")
+        ax[0].set_title("Wall-clock TPM request time per run")
+    else:
+        ax[0].set_ylabel("T_FTPM (ms)")
+        ax[0].set_title("Wall-clock fTPM request time per run")
     ax[0].grid(True, axis="y", alpha=0.3)
 
     i = 1
@@ -177,6 +184,8 @@ def make_plot(per_run, path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--device", default=DEVICE,
+                    help=f"device name (default {DEVICE})")
     ap.add_argument("csv", nargs="*",
                     help=f"run CSVs (a glob is fine); default {DEFAULT_GLOB}")
     ap.add_argument("--baseline", nargs="+", default=[], metavar="CSV",
@@ -185,9 +194,9 @@ def main():
                     help="discard the first N requests of each run (default 0)")
     ap.add_argument("--cores", type=int, default=0,
                     help="also report U x this core count (undo all-cores averaging)")
-    ap.add_argument("--out", default=OUT_DIR + "/benchmark-summary.txt",
+    ap.add_argument("--out", default=OUT_DIR + f"/{DEVICE}-benchmark-summary.txt",
                     help="also write the text summary here")
-    ap.add_argument("--plot", default=OUT_DIR + "/benchmark-summary.png",
+    ap.add_argument("--plot", default=OUT_DIR + f"/{DEVICE}-benchmark-summary.png",
                     help="write the plot here ('' to skip)")
     a = ap.parse_args()
 
