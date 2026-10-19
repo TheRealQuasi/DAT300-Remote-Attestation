@@ -20,7 +20,7 @@ CA=${CA:-./ra-ca-ftpm}      # ra-ca-ftpm is the CA binary
 OUT=${OUT:-$DIR/results}
 LEVELS=${LEVELS:-"0 2 4 8 16 32"}
 
-TCTI=${TCTI:-device:/dev/tpmrm0}
+TCTI=${TCTI:-device:/dev/tpmrm1}
 AK_CTX=${AK_CTX:-/tmp/ftpm-dos-ak.ctx}
 LOAD=${LOAD:-quote}
 

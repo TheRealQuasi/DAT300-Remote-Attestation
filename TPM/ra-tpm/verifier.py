@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-verifier.py - remote-attestation verifier for ra_ftpm_ca.
+verifier.py - remote-attestation verifier for the TPM + IMA attester.
+
+Instead of a verifier-chosen file list measured into PCR 16 (the fTPM
+design), this verifies the attester's IMA measurement log against PCR 10:
+the attester sends its binary IMA runtime measurements, we replay them to
+reconstruct PCR 10, and check that reconstruction equals the PCR 10 value
+the TPM signed in the quote. Enrollment records the known-good file set;
+later attests must match it.
 
 Three non-interactive modes (pick one); without any, it is interactive:
     --enroll      send ONE enroll, then stop            (run once per boot)
     --benchmark   send attests nonstop, no log          (CA drives run length)
     --dos         send --count attests, log each verdict to a CSV, then stop
-
-The CA drives the run: it exits after its BENCH_REQUESTS (benchmark/DoS) or
-when this verifier closes the connection. This verifier never enrolls inside
-a benchmark/DoS run - enroll separately with --enroll first.
 
 Needs: sudo apt install python3-cryptography
 """
@@ -31,19 +34,59 @@ from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 PORT = 5000
 CMD_ATTEST = b"A"
-NUM_PCRS = 9          # PCRs 0-7 and 16, in that order
+NUM_PCRS = 9          # PCRs 0-7 then 10, in that order
+PCR_IMA = 8           # index of PCR 10 in the list above (0..7 = 0..7, 8 = 10)
 
 DOS_OUT_DIR = "~/optee/dos/results"
 DEFAULT_STATE_FILE = "trusted/enrolled_device.json"
-DEFAULT_PROTECTED_FILE = "/root/protected.txt"
 
 
-def expected_pcr16(nonce, ref_hashes):
-    """The PCR 16 value the fTPM must produce if every file is unchanged."""
-    pcr = bytes(32)
-    pcr = hashlib.sha256(pcr + hashlib.sha256(nonce).digest()).digest()
-    for h in ref_hashes:
-        pcr = hashlib.sha256(pcr + h).digest()
+def replay_ima(log):
+    """Parse the binary IMA log -> list of per-entry (extend_value, path, hash).
+
+    Each record in /sys/kernel/security/ima/binary_runtime_measurements is:
+        pcr          (4 bytes, little-endian)
+        template_hash(20 bytes  - the SHA1 template digest field)
+        name_len     (4 bytes, LE) + template_name
+        data_len     (4 bytes, LE) + template_data
+
+    The value extended into the SHA256 PCR bank is sha256(template_data)
+    (confirmed on this hardware); a violation entry (all-zero template hash)
+    is extended as all 0xFF. path/hash come from the ima-ng d-ng/n-ng fields.
+    Raises ValueError on a malformed log.
+    """
+    entries, o = [], 0
+    while o < len(log):
+        _pcr, = struct.unpack_from("<I", log, o); o += 4
+        sha1 = log[o:o + 20]; o += 20
+        nlen, = struct.unpack_from("<I", log, o); o += 4
+        tname = log[o:o + nlen]; o += nlen
+        dlen, = struct.unpack_from("<I", log, o); o += 4
+        data = log[o:o + dlen]; o += dlen
+        if len(data) != dlen:
+            raise ValueError("truncated IMA log")
+
+        ext = b"\xff" * 32 if sha1 == bytes(20) else hashlib.sha256(data).digest()
+
+        path, digest_hex = None, None
+        if tname.rstrip(b"\0") in (b"ima-ng", b"ima-sig"):
+            l, = struct.unpack_from("<I", data, 0)
+            algo, _, digest = data[4:4 + l].partition(b"\0")
+            p = 4 + l
+            l2, = struct.unpack_from("<I", data, p)
+            path = data[p + 4:p + 4 + l2].rstrip(b"\0").decode(errors="replace")
+            if algo != b"sha256:":
+                raise ValueError(f"unsupported IMA hash {algo!r}")
+            digest_hex = digest.hex()
+        entries.append((ext, path, digest_hex))
+    return entries
+
+
+def chain(base, entries):
+    """Fold per-entry extend values into base, as the TPM does."""
+    pcr = base
+    for ext, _p, _h in entries:
+        pcr = hashlib.sha256(pcr + ext).digest()
     return pcr
 
 
@@ -64,7 +107,7 @@ def recv_exact(sock, n):
 
 def recv_msg(sock):
     length = struct.unpack(">I", recv_exact(sock, 4))[0]
-    if length > 65536:
+    if length > 16 * 1024 * 1024:            # IMA logs can be large
         raise ValueError("message too large")
     return recv_exact(sock, length)
 
@@ -123,69 +166,99 @@ def sig_to_der(blob):
 
 
 # ----------------------------------------------------------- checking
-def attest(conn, state_file, enroll, paths):
-    """Send nonce + file list, check the answer."""
+def attest(conn, state_file, enroll):
+    """Send nonce, then check the quote + IMA log the attester returns."""
     nonce = secrets.token_bytes(32)
-    send_msg(conn, CMD_ATTEST + bytes([len(nonce)]) + nonce
-             + "\n".join(paths).encode())
-    print(f"  sent nonce {nonce.hex()[:16]}... + {len(paths)} files")
+    send_msg(conn, CMD_ATTEST + bytes([len(nonce)]) + nonce)
+    print(f"  sent nonce {nonce.hex()[:16]}...")
 
-    ak_blob = recv_msg(conn)
-    quote = recv_msg(conn)
-    sig = recv_msg(conn)
+    ak_blob  = recv_msg(conn)
+    quote    = recv_msg(conn)
+    sig      = recv_msg(conn)
     pcr_blob = recv_msg(conn)
+    ima_log  = recv_msg(conn)
+
     if len(pcr_blob) != NUM_PCRS * 32:
         return "FAIL: wrong number of PCR values"
     pcrs = [pcr_blob[i * 32:(i + 1) * 32] for i in range(NUM_PCRS)]
-    hash_blob = recv_msg(conn)
-    if len(hash_blob) != len(paths) * 32:
-        return "FAIL: wrong number of file hashes"
-    hashes_now = [hash_blob[i * 32:(i + 1) * 32] for i in range(len(paths))]
 
+    # 1. Is the quote really signed by this AK?
     try:
         ak_to_key(ak_blob).verify(sig_to_der(sig), quote,
                                   ec.ECDSA(hashes.SHA256()))
     except InvalidSignature:
         return "FAIL: bad signature"
 
+    # 2. Is it fresh (our nonce)?
     q_nonce, pcr_digest = read_quote(quote)
     if q_nonce != nonce:
         return "FAIL: wrong nonce (replayed quote?)"
+
+    # 3. Are the PCR values we were sent the ones the TPM signed?
     if hashlib.sha256(b"".join(pcrs)).digest() != pcr_digest:
         return "FAIL: PCR values don't match the signed quote"
-    if pcrs[8] != expected_pcr16(nonce, hashes_now):
-        return "FAIL: file hashes don't match the signed PCR 16"
 
+    # 4. Parse the IMA log. PCR 10 does NOT start at zero on this board, so we
+    #    cannot recompute the absolute PCR from the log alone. Instead we anchor
+    #    to the PCR 10 value captured at enrollment and check that the NEW log
+    #    entries chain from it to the currently-signed PCR 10 (proven correct
+    #    with the sha256(template_data) extend).
+    cur_pcr10 = pcrs[PCR_IMA]
+    try:
+        entries = replay_ima(ima_log)
+    except (ValueError, struct.error) as e:
+        return f"FAIL: bad IMA log ({e})"
+    files = {p: h for (_e, p, h) in entries if p is not None}
+
+    # --- enrollment: record the device, the anchor PCR 10, the log length,
+    #     and the known-good file set ---
     if enroll:
         os.makedirs(os.path.dirname(state_file) or ".", exist_ok=True)
         with open(state_file, "w") as f:
             json.dump({"ak": ak_blob.hex(),
                        "boot_pcrs": [p.hex() for p in pcrs[:8]],
-                       "files": {p: h.hex()
-                                 for p, h in zip(paths, hashes_now)}},
+                       "pcr10": cur_pcr10.hex(),
+                       "n_entries": len(entries),
+                       "files": files},
                       f, indent=2)
-        return f"ENROLLED ({len(paths)} files)"
+        return f"ENROLLED ({len(entries)} entries, {len(files)} files)"
 
+    # --- verification against the enrollment ---
     if not os.path.exists(state_file):
         return "FAIL: not enrolled yet (run --enroll first)"
     with open(state_file) as f:
         known = json.load(f)
+
     if known["ak"] != ak_blob.hex():
         return "FAIL: unknown device (AK differs)"
     if known["boot_pcrs"] != [p.hex() for p in pcrs[:8]]:
         return "FAIL: boot PCRs 0-7 changed since enrollment"
-    for p, h in zip(paths, hashes_now):
-        if known["files"].get(p) != h.hex():
-            return f"FAIL: {p} has been modified (or is missing)"
+
+    n0 = known["n_entries"]
+    if len(entries) < n0:
+        return "FAIL: IMA log shorter than at enrollment (rebooted/reset?)"
+
+    # Chain the entries added since enrollment onto the enrolled PCR 10 anchor;
+    # it must reach the freshly-signed PCR 10. This ties the current log to the
+    # quote without needing the (non-zero) boot-time PCR start.
+    base = bytes.fromhex(known["pcr10"])
+    new_entries = entries[n0:]
+    if chain(base, new_entries) != cur_pcr10:
+        return "FAIL: IMA log does not extend the enrolled PCR 10"
+
+    # Tamper check: every file measured since enrollment must be known-good.
+    for _e, p, h in new_entries:
+        if p is None:
+            continue
+        if known["files"].get(p) != h:
+            return f"FAIL: {p} modified or not enrolled"
     return "TRUSTED"
 
 
 # ----------------------------------------------------------- driver
 def parse_args():
     ap = argparse.ArgumentParser(
-        description="Remote-attestation verifier for ra_ftpm_ca.")
-    ap.add_argument("--file", action="append", default=[], metavar="PATH",
-                    help="file the attester must hash (repeatable)")
+        description="Remote-attestation verifier (TPM + IMA).")
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--state", default=DEFAULT_STATE_FILE)
 
@@ -210,7 +283,6 @@ def parse_args():
                     help="override the DoS verdict CSV path")
 
     args = ap.parse_args()
-    args.file = args.file or [DEFAULT_PROTECTED_FILE]
     args.auto = args.enroll or args.benchmark or args.dos
     args.done = 0
     args.count = args.requests * args.runs
@@ -258,19 +330,19 @@ def serve(conn, args, vw, vf):
                 continue
 
         try:
-            result = attest(conn, args.state, cmd == "enroll", args.file)
+            result = attest(conn, args.state, cmd == "enroll")
             send_msg(conn, result.encode())
             print(f"  -> {result}")
         except (ConnectionError, OSError) as e:
             if args.dos:
-                # A timeout/drop under load: this attest and every remaining
-                # one count as denied. Stop the run (no reconnect = no hang).
+                # Timeout/drop under load: this attest and every remaining one
+                # count as denied. Stop the run (no reconnect = no hang).
                 print(f"  -> denied: {e}")
                 while args.done < args.count:
                     log_verdict(vw, vf, args.done, "TIMEOUT/LOST", args.load_level)
                     args.done += 1
                 return None
-            return True                # benchmark: CA ended its run, reconnect
+            return True                  # benchmark: CA ended its run, reconnect
         except ValueError as e:
             print(f"  -> ERROR: {e}")
             continue

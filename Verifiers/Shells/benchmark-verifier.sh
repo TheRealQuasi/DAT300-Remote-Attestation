@@ -40,9 +40,15 @@ RUNS=${1:-10}     # runs (passed to the verifier)
 REQ=${2:-20}       # requests per run (passed to the verifier)
 
 # ---- run the verifier (benchmark mode, unlimited; Ctrl-C when done) -------
-echo "benchmark verifier: waiting for the attester (Ctrl-C to stop)"
-python3 "$VERIFIER" --file "$PROTECTED" --benchmark \
+if [ "$DEVICE_NAME" = "tpm" ]; then
+    echo "benchmark verifier: waiting for the TPM attester (Ctrl-C to stop)"
+    python3 "$VERIFIER" --benchmark \
     --requests "$REQ" --runs "$RUNS" --timeout "$TIMEOUT" "$@"
+else
+    echo "benchmark verifier: waiting for the fTPM attester (Ctrl-C to stop)"
+    python3 "$VERIFIER" --file "$PROTECTED" --benchmark \
+        --requests "$REQ" --runs "$RUNS" --timeout "$TIMEOUT" "$@"
+fi
 
 # ---- collect + analyse ---------------------------------------------------
 if [ "$USE_SSH" = "true" ]; then

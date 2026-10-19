@@ -13,8 +13,9 @@ PORT=${2:-5000}
 
 # /dev/tpmrm0 is the default for the RPi4's TPM
 # /dev/tpmrm1 is the default for the RPi4's fTPM
+DEVICE_NAME=${3:-ftpm}
 DEVICE=${3:-/dev/tpmrm1}
 
-echo "enrolling the device (one round, waiting for the attester)..."
+echo "enrolling the $DEVICE_NAME device (one round, waiting for the attester)..."
 ENROLL=$ENROLL "$CA" "$IP" "$PORT" "$DEVICE" > /dev/null
 echo "enroll done!"

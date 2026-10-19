@@ -37,7 +37,9 @@ else
 fi
 ANALYZER=${ANALYZER:-$HOME/shared/DAT300-Remote-Attestation/Verifiers/Analyzers/dos-analyzer.py}
 PROTECTED=${PROTECTED:-/root/protected.txt}
-TIMEOUT=${TIMEOUT:-5}
+
+
+TIMEOUT=${TIMEOUT:-20}
 LEVELS=${LEVELS:-"0 2 4 8 16 32"}   # load levels to sweep through
 
 RUNS=${1:-1}
@@ -51,8 +53,13 @@ for LEVEL in $LEVELS; do
     # DoS policy: --dos logs verdicts and implies auto-send. --no-auto-enroll
     # because enrollment is done ONCE up front, so only attests flow here
     # (count = REQ, no enroll row). Short timeout so a starved request = denied.
-    python3 "$VERIFIER" --file "$PROTECTED" --dos --dos-csv "$CSV_PATH"/verifier_load{$LEVEL}.csv \
-        --requests "$REQ" --runs "$RUNS" --timeout "$TIMEOUT" --load-level "$LEVEL"
+    if [ "$DEVICE_NAME" = "tpm" ]; then
+        python3 "$VERIFIER" --dos --dos-csv "$CSV_PATH"/verifier_load{$LEVEL}.csv \
+            --requests "$REQ" --runs "$RUNS" --timeout "$TIMEOUT" --load-level "$LEVEL"
+    else
+        python3 "$VERIFIER" --file "$PROTECTED" --dos --dos-csv "$CSV_PATH"/verifier_load{$LEVEL}.csv \
+            --requests "$REQ" --runs "$RUNS" --timeout "$TIMEOUT" --load-level "$LEVEL"
+    fi
 done
 
 # ---- collect + analyse ---------------------------------------------------
