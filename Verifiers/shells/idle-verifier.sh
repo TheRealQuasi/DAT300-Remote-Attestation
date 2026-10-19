@@ -8,9 +8,6 @@
 #
 # usage: DEVICE=<device-name> ./idle-verifier.sh
 
-# ------------------------- Change these parameters to change the benchmark -------------------------
-
-
 # ------------------------- Don't change these parameters unless you know what you're doing -------------------------
 
 USE_SSH=${USE_SSH:-false}

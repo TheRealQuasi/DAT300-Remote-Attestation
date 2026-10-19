@@ -6,7 +6,7 @@
 #
 # Pair with verifier: "Verifiers/shells/dos-verifier.sh"
 #
-# usage: ./ftpm-dos-ssh.sh [requests]
+# usage: ./ftpm-dos-ssh.sh <requests>
 
 # ------------------------- Change these parameters to change the benchmark -------------------------
 
