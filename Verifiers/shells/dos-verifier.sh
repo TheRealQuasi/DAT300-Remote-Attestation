@@ -35,7 +35,7 @@ if [ "$DEVICE_NAME" = "tpm" ]; then
 else
     VERIFIER=${VERIFIER:-$HOME/shared/DAT300-Remote-Attestation/FTPM/ra-ftpm/verifier.py}
 fi
-ANALYZER=${ANALYZER:-$HOME/shared/DAT300-Remote-Attestation/Verifiers/Analyzers/dos-analyzer.py}
+ANALYZER=${ANALYZER:-$HOME/shared/DAT300-Remote-Attestation/Verifiers/analyzers/dos-analyzer.py}
 PROTECTED=${PROTECTED:-/root/protected.txt}
 
 
