@@ -1,36 +1,36 @@
 #!/bin/sh
-# ftpm-dos.sh - DoS availability test, GUEST side. One script, whole sweep.
-# Runs INSIDE the QEMU guest (the attester device).
+# ftpm-dos-ssh.sh - run a DoS sweep on the RPi4's TPM. It exits by itself after 
+# <LEVELS> levels, each with <REQ> requests. Each level produces a CSV file with the results.
 #
-# For each load level it: starts N contending TPM workers, runs the CA in
-# bench mode for one measured round (enroll + REQ attests -> ca_load<N>.csv),
-# then stops the workers. Pair it with ftpm-dos-sweep-verifier.sh on the PC,
-# started FIRST, with the SAME levels and request count; the two stay in
-# lockstep because the verifier waits for the CA to connect at each level.
+# Used on RPi4
 #
-# usage: ./ftpm-dos.sh [requests] [verifier-ip] [port]
-#   requests : attests per level (default 20; must match the verifier --count)
-#   LEVELS   : edit below (default "0 1 2 4 8 16 32")
-#   LOAD     : pcrread (default, light read) | quote (heavy signing)
-#              quote auto-creates its key on first use - no separate prep step.
-#   results  : $DIR/results/ca_load<N>.csv  (= ~/optee/dos/results on the PC)
+# Pair with verifier: "Verifiers/shells/dos-verifier.sh"
+#
+# usage: ./ftpm-dos-ssh.sh [requests]
+
+# ------------------------- Change these parameters to change the benchmark -------------------------
+
+LEVELS=${LEVELS:-"0 2 4 8 16 32"}
+REQ=${1:-10}
+LOAD=${LOAD:-NULL}
+
+# ------------------------- Don't change these parameters unless you know what you're doing -------------------------
 
 DIR=$(cd "$(dirname "$0")" && pwd)
-CA=${CA:-./ra-ca-ftpm}      # ra-ca-ftpm is the CA binary
+CA=${CA:-./ra-ca-ftpm}
 OUT=${OUT:-$DIR/results}
-LEVELS=${LEVELS:-"0 2 4 8 16 32"}
-
-TCTI=${TCTI:-device:/dev/tpmrm1}
-AK_CTX=${AK_CTX:-/tmp/ftpm-dos-ak.ctx}
-LOAD=${LOAD:-quote}
-
-REQ=${1:-10}
-IP=${2:-127.0.0.1}
-PORT=${3:-5000}
 
 # /dev/tpmrm0 is the default for the RPi4's TPM
 # /dev/tpmrm1 is the default for the RPi4's fTPM
-DEVICE=${4:-/dev/tpmrm1}
+DEVICE=${DEVICE:-/dev/tpmrm1}
+
+IP=${IP:-127.0.0.1}
+PORT=${PORT:-5000}
+
+TCTI=${TCTI:-device:/dev/tpmrm1}
+AK_CTX=${AK_CTX:-/tmp/ftpm-dos-ak.ctx}
+
+# ------------------------- Run the DoS ------------------------------------------------------------
 
 # ---- pick the load command from LOAD (TOOL/ARGS still override) -----------
 if [ "$LOAD" = "quote" ]; then
@@ -142,5 +142,6 @@ for LEVEL in $LEVELS; do
     sleep 2                               # let the TPM settle before next level
 done
 
-echo "sweep done. Results in $OUT/ca_load*.csv"
-echo "On your PC: python3 FTPM/ftpm-analyzers/ftpm-dos-analyzer.py"
+echo "done -> $OUT"
+
+# ------------------------- End of script ------------------------------------------------------------

@@ -1,35 +1,35 @@
 #!/bin/sh
-# ftpm-dos-sweep-verifier.sh - PC side of the DoS sweep. Runs on the PC.
+# dos-verifier.sh - run the DoS verifier, sweeping through load levels. It exits by itself after 
+# <LEVELS> levels, each with <REQ> requests. Each level produces a CSV file with the results.
 #
-# Steps through the SAME load levels as the guest's ftpm-dos-sweep.sh, running
-# one verifier round per level. Each round:
-#   - waits for the CA to connect (so it stays in lockstep with the guest),
-#   - sends 1 enroll + <requests> attests,
-#   - writes ~/optee/dos/results/verifier_load<level>.csv,
-#   - exits when done, and the loop moves to the next level.
+# Used on own machine (PC)
 #
-# Start THIS first, then start ftpm-dos-sweep.sh in the guest. Levels and
-# request count must match the guest's.
+# Pair with attester: "Verifiers/shells/ftpm-dos-ssh.sh" or "Verifiers/shells/tpm-dos-ssh.sh"
 #
-# usage: ./ftpm-dos-sweep-verifier.sh [requests]
-#   requests : attests per level (default 20; passed as the verifier --count)
-#   levels    : edit LEVELS below (default 0 1 2 4 8 16 32)
+# usage: DEVICE=<device-name> LEVELS="<load-levels>" ./dos-verifier.sh <requests>
 
-# ---- environment toggles (lowercase true/false) --------------------------
-USE_SSH=${USE_SSH:-false}
+# ------------------------- Change these parameters to change the benchmark -------------------------
+
+LEVELS=${LEVELS:-"0 2 4 8 16 32"}
+REQ=${1:-10}
+
+# ------------------------- Don't change these parameters unless you know what you're doing -------------------------
+
+RUNS=${RUNS:-1}
+USE_SSH=${USE_SSH:-true}
+
+# /dev/tpmrm0 is the default for the RPi4's TPM
+# /dev/tpmrm1 is the default for the RPi4's fTPM
+DEVICE_NAME=${DEVICE_NAME:-ftpm}
 
 RPI4=${RPI4:-rpi4-optee}
 RPI4_PATH=${RPI4_PATH:-$HOME/shared/DAT300-Remote-Attestation/RPi4}
 RESULTS_PATH=${RESULTS_PATH:-$RPI4_PATH/results}
 
-# /dev/tpmrm0 is the default for the RPi4's TPM
-# /dev/tpmrm1 is the default for the RPi4's fTPM
-DEVICE_NAME=${DEVICE_NAME:-ftpm}
 RESULTS_PATH="$RESULTS_PATH/$DEVICE_NAME"
 
 CSV_PATH=${CSV_PATH:-$RESULTS_PATH/dos-data}
 
-# ---- program defaults ----------------------------------------------------
 if [ "$DEVICE_NAME" = "tpm" ]; then
     VERIFIER=${VERIFIER:-$HOME/shared/DAT300-Remote-Attestation/TPM/ra-tpm/verifier.py}
 else
@@ -37,13 +37,9 @@ else
 fi
 ANALYZER=${ANALYZER:-$HOME/shared/DAT300-Remote-Attestation/Verifiers/analyzers/dos-analyzer.py}
 PROTECTED=${PROTECTED:-/root/protected.txt}
-
-
 TIMEOUT=${TIMEOUT:-20}
-LEVELS=${LEVELS:-"0 2 4 8 16 32"}   # load levels to sweep through
 
-RUNS=${1:-1}
-REQ=${2:-10}
+# ------------------------- Run the DoS verifier  -----------------------------------------------
 
 # The sweep - one verifier round per level.
 for LEVEL in $LEVELS; do
@@ -80,3 +76,5 @@ else
     python3 "$ANALYZER"
     echo "done -> FTPM/results"
 fi
+
+# ------------------------- End of script ------------------------------------------------------------

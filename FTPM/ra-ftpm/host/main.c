@@ -144,8 +144,6 @@ static void measure_file(ESYS_CONTEXT *esys, const char *path,
 	for (uint32_t i = 0; i < d->count; i++)
 		if (d->digests[i].hashAlg == TPM2_ALG_SHA256)
 			memcpy(hash_out, d->digests[i].digest.sha256, 32);
-	if (!bench_on())
-		printf("  hashed %s%s\n", path, f ? "" : " (MISSING)");
 	Esys_Free(d);
 }
 

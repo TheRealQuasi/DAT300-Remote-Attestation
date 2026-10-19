@@ -302,7 +302,7 @@ int main(int argc, char *argv[])
 			bench_stop(&b);
 			// ---------------------------------------
 
-			printf("fTPM signed a quote over PCRs 0-7 + 16\n");
+			printf("TPM signed a quote over PCRs 0-7 + 10\n");
 
 			/* 4. Send AK, quote, signature, PCRs and file hashes. */
 			ok = send_msg(fd, ak_buf, ak_len) == 0 &&

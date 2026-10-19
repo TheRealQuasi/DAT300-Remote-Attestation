@@ -1,20 +1,33 @@
 #!/bin/sh
+# idle-verifier.sh - run the idle verifier (not actually a verifier). Run this after
+# idle-runner-ssh.sh has finished. It collects the results and produces a summary.
+#
+# Used on own machine (PC)
+#
+# Pair with attester: "RPi4/idle-runner-ssh.sh"
+#
+# usage: DEVICE=<device-name> ./idle-verifier.sh
+
+# ------------------------- Change these parameters to change the benchmark -------------------------
 
 
-# ---- environment toggles (lowercase true/false) --------------------------
+# ------------------------- Don't change these parameters unless you know what you're doing -------------------------
+
 USE_SSH=${USE_SSH:-false}
+
+DEVICE_NAME=${DEVICE_NAME:-idle}
 
 RPI4=${RPI4:-rpi4-optee}
 RPI4_PATH=${RPI4_PATH:-$HOME/shared/DAT300-Remote-Attestation/RPi4}
 RESULTS_PATH=${RESULTS_PATH:-$RPI4_PATH/results}
 
-DEVICE_NAME=${DEVICE_NAME:-idle}
 RESULTS_PATH="$RESULTS_PATH/$DEVICE_NAME"
 
 CSV_PATH=${CSV_PATH:-$RESULTS_PATH/$DEVICE_NAME-data}
 
-# ---- program defaults ----------------------------------------------------
 ANALYZER=${ANALYZER:-$HOME/shared/DAT300-Remote-Attestation/Verifiers/analyzers/benchmark-analyzer.py}
+
+# ------------------------- Run the idle verifier ------------------------------------------------------------
 
 # ---- collect + analyse ---------------------------------------------------
 if [ "$USE_SSH" = "true" ]; then

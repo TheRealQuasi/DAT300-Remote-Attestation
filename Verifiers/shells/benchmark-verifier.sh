@@ -1,32 +1,34 @@
 #!/bin/sh
-# ftpm-benchmark-verifier.sh - PC side launcher for NORMAL benchmarking.
-# Runs the verifier in benchmark mode (attests nonstop, no verdict log), waits
-# for it to finish (Ctrl-C when the guest/Pi runs are done), then collects and
-# analyses the results.
+# benchmark-verifier.sh - run the benchmark verifier. It exits by itself 
+# after <RUNS> runs, each with <REQ> requests. Each run produces a CSV file with the results.
 #
-# usage: ./ftpm-benchmark-verifier.sh
-#   env toggles (default false):
-#     USE_SSH=true    pull run*.csv from the Pi over scp before analysing
-#   env paths:
-#     RPI4            ssh host alias for the Pi (default rpi4-optee)
-#     RPI4_PATH       local dir for the Pi's results
-#     CSV_PATH        where run CSVs live for the analyzer
+# Used on own machine (PC)
+#
+# Pair with attester: "RPi4/ftpm-benchmark-ssh.sh" or "RPi4/tpm-benchmark-ssh.sh"
+#
+# usage: DEVICE=<device-name> ./benchmark-verifier.sh <runs> <requests-per-run>
 
-# ---- environment toggles (lowercase true/false) --------------------------
-USE_SSH=${USE_SSH:-false}
+# ------------------------- Change these parameters to change the benchmark -------------------------
+
+RUNS=${1:-10}
+REQ=${2:-20}
+
+# ------------------------- Don't change these parameters unless you know what you're doing -------------------------
+
+USE_SSH=${USE_SSH:-true}
+
+# /dev/tpmrm0 is the default for the RPi4's TPM
+# /dev/tpmrm1 is the default for the RPi4's fTPM
+DEVICE_NAME=${DEVICE_NAME:-ftpm}
 
 RPI4=${RPI4:-rpi4-optee}
 RPI4_PATH=${RPI4_PATH:-$HOME/shared/DAT300-Remote-Attestation/RPi4}
 RESULTS_PATH=${RESULTS_PATH:-$RPI4_PATH/results}
 
-# /dev/tpmrm0 is the default for the RPi4's TPM
-# /dev/tpmrm1 is the default for the RPi4's fTPM
-DEVICE_NAME=${DEVICE_NAME:-ftpm}
 RESULTS_PATH="$RESULTS_PATH/$DEVICE_NAME"
 
 CSV_PATH=${CSV_PATH:-$RESULTS_PATH/benchmark-data}
 
-# ---- program defaults ----------------------------------------------------
 if [ "$DEVICE_NAME" = "tpm" ]; then
     VERIFIER=${VERIFIER:-$HOME/shared/DAT300-Remote-Attestation/TPM/ra-tpm/verifier.py}
 else
@@ -36,8 +38,7 @@ ANALYZER=${ANALYZER:-$HOME/shared/DAT300-Remote-Attestation/Verifiers/analyzers/
 PROTECTED=${PROTECTED:-/root/protected.txt}
 TIMEOUT=${TIMEOUT:-120}
 
-RUNS=${1:-10}     # runs (passed to the verifier)
-REQ=${2:-20}       # requests per run (passed to the verifier)
+# ------------------------- Run the benchmark verifier -------------------------------
 
 # ---- run the verifier (benchmark mode, unlimited; Ctrl-C when done) -------
 if [ "$DEVICE_NAME" = "tpm" ]; then
@@ -68,3 +69,5 @@ else
     python3 "$ANALYZER"
     echo "done -> FTPM/results"
 fi
+
+# ------------------------- End of script ------------------------------------------------------------
