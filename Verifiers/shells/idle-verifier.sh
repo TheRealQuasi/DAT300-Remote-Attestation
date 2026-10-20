@@ -10,7 +10,7 @@
 
 # ------------------------- Don't change these parameters unless you know what you're doing -------------------------
 
-USE_SSH=${USE_SSH:-false}
+USE_SSH=${USE_SSH:-true}
 
 DEVICE_NAME=${DEVICE_NAME:-idle}
 

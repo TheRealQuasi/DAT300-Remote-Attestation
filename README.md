@@ -9,7 +9,7 @@ the proof holds even against a fully compromised Linux userspace — including
 root.
 
 The system runs against **two independent attestation targets on the same Pi**,
-and the verifier has a mode for each:
+with a verifier for each:
 
 | Device | TPM | What is measured | PCR | Verification |
 |--------|-----|------------------|-----|--------------|
@@ -17,10 +17,21 @@ and the verifier has a mode for each:
 | **`tpm`**  | LetsTrust hardware TPM (`/dev/tpmrm0`) | The kernel's IMA runtime log | 10 | Anchored: new IMA entries chained onto the enrolled PCR 10 |
 
 - **`main.c`** — the Client Application (CA) that runs on the Pi. It is a pure
-  relay: it never decides what gets measured and never handles a secret.
+  relay: it never decides what gets measured and never handles a secret. Each
+  target has its own CA source (`FTPM/ra-ftpm/host/main.c`,
+  `TPM/ra-tpm/host/main.c`), cross-compiled into `RPi4/CA/`.
 - **`verifier.py`** — runs on a trusted machine (your PC). It issues the
   challenge, renders the verdict, and records latency/verdict data for the
-  benchmark and DoS experiments. One verifier binary, selected per device.
+  benchmark and DoS experiments. There is one per model: the file/PCR-16
+  verifier (`FTPM/ra-ftpm/verifier.py`) and the IMA/PCR-10 verifier
+  (`TPM/ra-tpm/verifier.py`); the shell scripts pick the right one from
+  `DEVICE_NAME`.
+
+> **`tpm-file` (comparison mode).** To isolate the cost of the silicon from the
+> cost of the measurement method, you can also run the **hardware TPM
+> (`/dev/tpmrm0`) through the fTPM CA and the file/PCR-16 verifier** — identical
+> code, only the chip differs. Results are labelled `tpm-file` so they sit
+> beside `ftpm` and `tpm` without clobbering them.
 
 ---
 
@@ -153,8 +164,14 @@ single command (shown in each chain below).
 
 Each experiment is a **pair**: a verifier script on your PC and a runner script
 on the Pi. Start the verifier first (it listens), then start the Pi runner
-(it connects and drives the rounds, exiting by itself when done). `DEVICE_NAME`
-selects `ftpm` or `tpm`.
+(it connects and drives the rounds, exiting by itself when done).
+
+- `DEVICE_NAME` selects which verifier runs (`ftpm`, `tpm`, or `idle`).
+- `LABEL` names the results folder; it defaults to `DEVICE_NAME`. Set it only
+  for the `tpm-file` comparison, where the CA is the fTPM one but you want the
+  output kept separate.
+- `DEVICE` (on the Pi) is the TPM device node: `/dev/tpmrm1` (fTPM, the
+  default) or `/dev/tpmrm0` (hardware TPM).
 
 ### RPi4 setup (once)
 
@@ -167,9 +184,10 @@ selects `ftpm` or `tpm`.
 **Enroll** (run once after each reboot, before anything else):
 
 ```sh
-# On the Pi (from your PC — opens the reverse tunnel and a Pi shell):
-ssh -R 5000:localhost:5000 rpi4-optee          # add rpi4-optee to ~/.ssh/config
-chroot /opt/pi4-debian /bin/bash && cd root/host
+# On the Pi (ssh from your PC opens the reverse tunnel and a Pi shell):
+ssh -R 5000:localhost:5000 rpi4-optee     # add rpi4-optee to ~/.ssh/config
+chroot /opt/pi4-debian /bin/bash
+cd root/host
 
 # On your PC:
 DEVICE_NAME=ftpm ./Verifiers/shells/enroll-verifier.sh
@@ -205,9 +223,10 @@ Same chain, `DEVICE_NAME=tpm` and the `tpm-*` runners:
 **Enroll:**
 
 ```sh
-# On the Pi (from your PC):
+# On the Pi:
 ssh -R 5000:localhost:5000 rpi4-optee
-chroot /opt/pi4-debian /bin/bash && cd root/host
+chroot /opt/pi4-debian /bin/bash
+cd root/host
 
 # On your PC:
 DEVICE_NAME=tpm ./Verifiers/shells/enroll-verifier.sh
@@ -236,6 +255,48 @@ DEVICE_NAME=tpm LEVELS="<load-levels>" ./Verifiers/shells/dos-verifier.sh <reque
 ./tpm-dos-ssh.sh <requests>
 ```
 
+### `tpm-file` — hardware TPM through the fTPM CA
+
+Runs the **hardware TPM (`/dev/tpmrm0`) with the fTPM CA and file/PCR-16
+verifier**, so the only difference from the `ftpm` runs is the chip. Use the
+**fTPM** verifier (`DEVICE_NAME=ftpm`) and runners, override the device node
+with `DEVICE=/dev/tpmrm0`, and relabel the output with `LABEL=tpm-file`.
+
+**Enroll:**
+
+```sh
+# On the Pi:
+ssh -R 5000:localhost:5000 rpi4-optee
+chroot /opt/pi4-debian /bin/bash
+cd root/host
+
+# On your PC:
+DEVICE_NAME=ftpm LABEL=tpm-file ./Verifiers/shells/enroll-verifier.sh
+
+# On the Pi:
+DEVICE=/dev/tpmrm0 ./ftpm-enroll-ssh.sh
+```
+
+**Benchmark:**
+
+```sh
+# On your PC:
+DEVICE_NAME=ftpm LABEL=tpm-file ./Verifiers/shells/benchmark-verifier.sh <runs> <requests-per-run>
+
+# On the Pi:
+DEVICE=/dev/tpmrm0 ./ftpm-benchmark-ssh.sh <runs> <requests-per-run>
+```
+
+**DoS sweep:**
+
+```sh
+# On your PC:
+DEVICE_NAME=ftpm LABEL=tpm-file LEVELS="<load-levels>" ./Verifiers/shells/dos-verifier.sh <requests>
+
+# On the Pi:
+DEVICE=/dev/tpmrm0 ./ftpm-dos-ssh.sh <requests>
+```
+
 ### Idle baseline
 
 Measures the device's CPU utilisation `U` while **no** attestation is running,
@@ -244,9 +305,10 @@ benchmark. Only `U` is meaningful here — `T_FTPM` is just the sampling window
 and `T_CPU` is ~0.
 
 ```sh
-# On the Pi (from your PC):
+# On the Pi:
 ssh -R 5000:localhost:5000 rpi4-optee
-chroot /opt/pi4-debian /bin/bash && cd root/host
+chroot /opt/pi4-debian /bin/bash
+cd root/host
 
 # On your PC:
 DEVICE_NAME=idle ./Verifiers/shells/idle-verifier.sh
@@ -267,6 +329,10 @@ DEVICE_NAME=idle ./Verifiers/shells/idle-verifier.sh
 | `ftpm-benchmark-ssh.sh` / `tpm-benchmark-ssh.sh` | Run the benchmark: `<runs>` runs of `<requests-per-run>` requests. Exits by itself; one CSV per run. |
 | `ftpm-dos-ssh.sh` / `tpm-dos-ssh.sh` | Run the DoS sweep over load levels, `<requests>` each. Exits by itself; one CSV per level. |
 | `idle-runner-ssh.sh` | Idle `U` baseline: `<runs> <requests> <wait-window>`. |
+| `ftpm-build-ca.sh` / `tpm-build-ca.sh` / `idle-build-ca.sh` | Cross-compile the respective CA into `RPi4/CA/`. |
+
+The `ftpm-*-ssh.sh` runners honour `DEVICE` (default `/dev/tpmrm1`), so the
+`tpm-file` runs reuse them with `DEVICE=/dev/tpmrm0`.
 
 **On your PC (`Verifiers/shells/`):**
 
@@ -277,38 +343,46 @@ DEVICE_NAME=idle ./Verifiers/shells/idle-verifier.sh
 | `dos-verifier.sh` | Verifier side of the DoS sweep (`LEVELS=...`). One CSV per level. |
 | `idle-verifier.sh` | Not actually a verifier — collects the idle results and prints a summary. Run after `idle-runner-ssh.sh` finishes. |
 
-Each verifier script takes the device via `DEVICE_NAME` and must be started
-before its Pi counterpart.
+Each verifier script selects its verifier from `DEVICE_NAME`, labels its output
+with `LABEL` (defaulting to `DEVICE_NAME`), and must be started before its Pi
+counterpart.
 
 ---
 
 ## Benchmarking and analysis
 
 The benchmark measures the resource overhead attestation adds on the Pi:
-wall-clock TPM time (`T_FTPM`), CA-process CPU time (`T_CPU`), system CPU
-utilisation (`U`), and peak memory (`RSS`). The CA writes one CSV per run; the
-DoS verifier additionally records, per request, the CA-side latency joined to
-the verifier's verdict (success / fail / timeout), so you can plot latency and
-success rate against load level.
+wall-clock TPM time (`T_FTPM`/`T_TPM`), CA-process CPU time (`T_CPU`), system
+CPU utilisation (`U`), and peak memory (`RSS`). The CA writes one CSV per run;
+the DoS verifier additionally records, per request, the CA-side latency joined
+to the verifier's verdict (success / fail / timeout), so you can plot latency
+and success rate against load level.
 
-Analyse with:
-
-```sh
-python3 FTPM/ftpm-analyzers/ftpm-benchmark-analyzer.py
-```
-
-With no arguments it reads the run CSVs and writes a summary and plot. To
-compare against a no-security baseline, pass those runs with `--baseline`:
+The verifier scripts pull the Pi's results into
+`RPi4/results/<label>/benchmark-data/` (or `dos-data/`) and run the analyzer
+automatically with the right `--device`, writing
+`<label>-benchmark-summary.{txt,png}` / `<label>-dos-summary.{txt,png}` beside
+the data. To re-run an analysis by hand, point it at a label's data and pass
+the matching `--device`:
 
 ```sh
-python3 FTPM/ftpm-analyzers/ftpm-benchmark-analyzer.py sec/run*.csv --baseline base/run*.csv
+# Benchmark summary + plot for one label (ftpm, tpm, tpm-file, idle):
+python3 Verifiers/analyzers/benchmark-analyzer.py \
+    RPi4/results/tpm-file/benchmark-data/run*.csv --device tpm-file
+
+# Overhead vs a no-security baseline:
+python3 Verifiers/analyzers/benchmark-analyzer.py \
+    RPi4/results/ftpm/benchmark-data/run*.csv \
+    --baseline base/run*.csv --device ftpm
+
+# DoS availability summary + plot:
+python3 Verifiers/analyzers/dos-analyzer.py \
+    RPi4/results/tpm/dos-data/*.csv --device tpm
 ```
 
-The DoS results have their own analyzer:
-
-```sh
-python3 FTPM/ftpm-analyzers/ftpm-dos-analyzer.py
-```
+`--device` sets the module label used in the titles, the latency-metric name,
+and the default output file names (`ftpm`, `tpm`, `tpm-file`, `idle`, or any
+custom label).
 
 ---
 
@@ -330,9 +404,9 @@ python3 FTPM/ftpm-analyzers/ftpm-dos-analyzer.py
   assurance. (IMA narrows this for files it measures, since any later access
   appends a new, checkable log entry.)
 - **The verifier is the root of trust.** It must run on a trusted host and keep
-  its enrollment state (`enrolled_device.json`) safe. There is no transport
-  encryption in the protocol itself; security comes from the signed quote and
-  nonce. Here the channel is still carried over SSH.
+  its enrollment state (`trusted/enrolled_device.json`) safe. There is no
+  transport encryption in the protocol itself; security comes from the signed
+  quote and nonce. Here the channel is still carried over SSH.
 - **Enrollment is trust-on-first-use.** Whatever state the device is in at
   `enroll` time becomes "known-good." Enroll only a device you trust, on a
   clean boot.
@@ -341,21 +415,67 @@ python3 FTPM/ftpm-analyzers/ftpm-dos-analyzer.py
 
 ## File layout
 
-Not good but whatever:
 ```
-deploy-rpi4-ssh.sh                                Stages CA + scripts onto the Pi
-RPi4/main.c                                       CA / attester source (C, runs on the Pi, both TPMs)
-RPi4/bench.h                                      Per-request benchmark hooks for the CA
-RPi4/idle_bench.c                                 Idle CPU-utilisation baseline (reuses bench.h)
-RPi4/ftpm-enroll-ssh.sh, ftpm-benchmark-ssh.sh, ftpm-dos-ssh.sh   fTPM runners (on the Pi)
-RPi4/tpm-enroll-ssh.sh,  tpm-benchmark-ssh.sh,  tpm-dos-ssh.sh    hardware-TPM runners (on the Pi)
-RPi4/idle-runner-ssh.sh                           Idle runner (on the Pi)
-Verifiers/verifier.py                             Verifier (Python; --enroll / --benchmark / --dos)
-Verifiers/shells/enroll-verifier.sh               Verifier side of enroll (on the PC)
-Verifiers/shells/benchmark-verifier.sh            Verifier side of the benchmark (on the PC)
-Verifiers/shells/dos-verifier.sh                  Verifier side of the DoS sweep (on the PC)
-Verifiers/shells/idle-verifier.sh                 Collects + summarises the idle results (on the PC)
-FTPM/ftpm-analyzers/ftpm-benchmark-analyzer.py    Summarises + plots the benchmark
-FTPM/ftpm-analyzers/ftpm-dos-analyzer.py          Summarises + plots the DoS sweep
-enrolled_device.json                              Written by the verifier on 'enroll'
+.
+├── README.md
+├── build.sh                      Build OP-TEE (QEMU)
+├── start-optee.sh                Boot the OP-TEE QEMU device
+├── deploy-qemu.sh                Stage CAs + scripts into the OP-TEE/QEMU tree
+├── deploy-rpi4-ssh.sh            Stage CAs + scripts onto the Pi
+│
+├── FTPM                          fTPM target (file / PCR 16)
+│   ├── ra-ftpm
+│   │   ├── host/main.c           CA source (file-measuring)
+│   │   ├── host/bench.h          Per-request benchmark hooks
+│   │   ├── verifier.py           File/PCR-16 verifier
+│   │   └── CMakeLists.txt
+│   ├── qemu-shells               QEMU run scripts (enroll/benchmark/dos)
+│   └── results                   QEMU-side summaries
+│
+├── TPM                           hardware TPM target (IMA / PCR 10)
+│   └── ra-tpm
+│       ├── host/main.c           CA source (IMA-log)
+│       ├── host/bench.h
+│       └── verifier.py           IMA/PCR-10 (anchored) verifier
+│
+├── IdleCA                        Idle U baseline
+│   ├── main.c
+│   └── bench.h
+│
+├── PTA                           PTA-based attester variant (+ its docs)
+│   └── ra-pta/ ...
+│
+├── RPi4                          Everything that runs on the Pi
+│   ├── CA                        Cross-compiled CA binaries
+│   │   ├── ra-ca-ftpm
+│   │   ├── ra-ca-tpm
+│   │   └── idle-ca
+│   ├── ftpm-build-ca.sh          Cross-compile the fTPM CA -> CA/ra-ca-ftpm
+│   ├── tpm-build-ca.sh           Cross-compile the TPM CA  -> CA/ra-ca-tpm
+│   ├── idle-build-ca.sh          Cross-compile the idle CA -> CA/idle-ca
+│   ├── ftpm-enroll-ssh.sh        fTPM runners (reused for tpm-file via DEVICE=)
+│   ├── ftpm-benchmark-ssh.sh
+│   ├── ftpm-dos-ssh.sh
+│   ├── tpm-enroll-ssh.sh         hardware-TPM runners
+│   ├── tpm-benchmark-ssh.sh
+│   ├── tpm-dos-ssh.sh
+│   ├── idle-runner-ssh.sh        Idle runner
+│   └── results                   Per-label results (pulled back to the PC too)
+│       ├── ftpm/{benchmark-data/, *-summary.{txt,png}}
+│       ├── tpm/{benchmark-data/, dos-data/, *-summary.{txt,png}}
+│       ├── tpm-file/{benchmark-data/, dos-data/, *-summary.{txt,png}}
+│       └── idle/{idle-data/, idle-benchmark-summary.{txt,png}}
+│
+├── Verifiers                     Everything that runs on the PC
+│   ├── shells
+│   │   ├── enroll-verifier.sh
+│   │   ├── benchmark-verifier.sh
+│   │   ├── dos-verifier.sh
+│   │   └── idle-verifier.sh
+│   └── analyzers
+│       ├── benchmark-analyzer.py Summarises + plots the benchmark (--device)
+│       └── dos-analyzer.py       Summarises + plots the DoS sweep (--device)
+│
+└── trusted
+    └── enrolled_device.json      Written by the verifier on 'enroll'
 ```
