@@ -22,10 +22,12 @@ OUT=${OUT:-$DIR/results/}
 
 # ------------------------- Run the idle benchmark ------------------------------------------------------------
 
+mkdir -p "$OUT"
+rm -f "$OUT"/idle_run*.csv          # <-- clear stale runs from previous benchmarks
 echo "Running the idle CA ($REQ requests, $WINDOW s wait between each)."
 i=0
 while [ $i -lt $RUNS ]; do
-    echo "run $i/$RUNS ($REQ requests) -> $OUT"
+    echo "NO ATTENSTATION: run $i/$RUNS ($REQ requests) -> $OUT"
     BENCH_OUT=$OUT/idle_run$i.csv BENCH_REQUESTS=$REQ $CA $WINDOW
     i=$((i + 1))
 done

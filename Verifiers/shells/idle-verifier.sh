@@ -26,11 +26,14 @@ ANALYZER=${ANALYZER:-$HOME/shared/DAT300-Remote-Attestation/Verifiers/analyzers/
 
 # ------------------------- Run the idle verifier ------------------------------------------------------------
 
+# Clean up any stale results from previous runs
+mkdir -p "$RESULTS_PATH"
+mkdir -p "$CSV_PATH"
+rm -f "$CSV_PATH"/$DEVICE_NAME*.csv         # <-- clear stale runs from previous benchmarks
+
 # ---- collect + analyse ---------------------------------------------------
 if [ "$USE_SSH" = "true" ]; then
     # Results are on the Pi: pull them over scp, then analyse those.
-    mkdir -p "$RESULTS_PATH"
-    mkdir -p "$CSV_PATH"
     scp "$RPI4":~/results/$DEVICE_NAME*.csv "$CSV_PATH"/
 
     echo "Analyzing results..."

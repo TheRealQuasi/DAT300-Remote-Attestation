@@ -20,12 +20,13 @@ USE_SSH=${USE_SSH:-true}
 # /dev/tpmrm0 is the default for the RPi4's TPM
 # /dev/tpmrm1 is the default for the RPi4's fTPM
 DEVICE_NAME=${DEVICE_NAME:-ftpm}
+LABEL=${LABEL:-$DEVICE_NAME}
 
 RPI4=${RPI4:-rpi4-optee}
 RPI4_PATH=${RPI4_PATH:-$HOME/shared/DAT300-Remote-Attestation/RPi4}
 RESULTS_PATH=${RESULTS_PATH:-$RPI4_PATH/results}
 
-RESULTS_PATH="$RESULTS_PATH/$DEVICE_NAME"
+RESULTS_PATH="$RESULTS_PATH/$LABEL"
 
 CSV_PATH=${CSV_PATH:-$RESULTS_PATH/benchmark-data}
 
@@ -40,13 +41,18 @@ TIMEOUT=${TIMEOUT:-120}
 
 # ------------------------- Run the benchmark verifier -------------------------------
 
+# Clean up any stale results from previous runs
+mkdir -p "$RESULTS_PATH"
+mkdir -p "$CSV_PATH"
+rm -f "$CSV_PATH"/run*.csv          # <-- clear stale runs from previous benchmarks
+
 # ---- run the verifier (benchmark mode, unlimited; Ctrl-C when done) -------
 if [ "$DEVICE_NAME" = "tpm" ]; then
-    echo "benchmark verifier: waiting for the TPM attester (Ctrl-C to stop)"
+    echo "benchmark verifier: waiting for the $LABEL attester (Ctrl-C to stop)"
     python3 "$VERIFIER" --benchmark \
     --requests "$REQ" --runs "$RUNS" --timeout "$TIMEOUT" "$@"
 else
-    echo "benchmark verifier: waiting for the fTPM attester (Ctrl-C to stop)"
+    echo "benchmark verifier: waiting for the $LABEL attester (Ctrl-C to stop)"
     python3 "$VERIFIER" --file "$PROTECTED" --benchmark \
         --requests "$REQ" --runs "$RUNS" --timeout "$TIMEOUT" "$@"
 fi
@@ -54,14 +60,12 @@ fi
 # ---- collect + analyse ---------------------------------------------------
 if [ "$USE_SSH" = "true" ]; then
     # Results are on the Pi: pull them over scp, then analyse those.
-    mkdir -p "$RESULTS_PATH"
-    mkdir -p "$CSV_PATH"
     scp "$RPI4":~/results/run*.csv "$CSV_PATH"/
 
     echo "Analyzing results..."
     python3 "$ANALYZER" "$CSV_PATH"/run*.csv \
-        --out "$RESULTS_PATH"/$DEVICE_NAME-benchmark-summary.txt --plot "$RESULTS_PATH"/$DEVICE_NAME-benchmark-summary.png \
-        --device "$DEVICE_NAME"
+        --out "$RESULTS_PATH"/$LABEL-benchmark-summary.txt --plot "$RESULTS_PATH"/$LABEL-benchmark-summary.png \
+        --device "$LABEL"
     echo "done -> $CSV_PATH"
 else
     # Results are already local (default results dir): let the analyzer find them.

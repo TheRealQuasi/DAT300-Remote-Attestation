@@ -12,6 +12,7 @@
 # ------------------------- Don't change these parameters unless you know what you're doing -------------------------
 
 DEVICE_NAME=${DEVICE_NAME:-ftpm}
+LABEL=${LABEL:-$DEVICE_NAME}
 
 if [ "$DEVICE_NAME" = "tpm" ]; then
     VERIFIER=${VERIFIER:-$HOME/shared/DAT300-Remote-Attestation/TPM/ra-tpm/verifier.py}
@@ -21,7 +22,7 @@ fi
 
 # ------------------------- Run the enrollment ------------------------------------------------------------
 
-echo "enrolling the $DEVICE_NAME (one round, waiting for the attester)..."
+echo "enrolling the $LABEL (one round, waiting for the attester)..."
 exec python3 "$VERIFIER" --enroll --timeout 120
 
 # ------------------------- End of script ------------------------------------------------------------

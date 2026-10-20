@@ -23,6 +23,11 @@ OUT=${OUT:-$DIR/results}
 # /dev/tpmrm0 is the default for the RPi4's TPM
 # /dev/tpmrm1 is the default for the RPi4's fTPM
 DEVICE=${DEVICE:-/dev/tpmrm1}
+if [ "$DEVICE" = "/dev/tpmrm0" ]; then
+    DEVICE_NAME=${DEVICE_NAME:-tpm}
+else
+    DEVICE_NAME=${DEVICE_NAME:-fTPM}
+fi
 
 IP=${IP:-127.0.0.1}
 PORT=${PORT:-5000}
@@ -115,11 +120,12 @@ trap 'stop_load' EXIT
 
 # ---- the sweep ------------------------------------------------------------
 mkdir -p "$OUT"
-echo "DoS sweep: levels [$LEVELS], $REQ attests each, load=$LOAD"
+rm -f "$OUT"/ca_load*.csv          # <-- clear stale runs from previous DoS sweeps
+echo "$DEVICE_NAME: DoS sweep: levels [$LEVELS], $REQ attests each, load=$LOAD"
 
 for LEVEL in $LEVELS; do
     echo "============================================================"
-    echo "LEVEL $LEVEL  ($REQ attests, load=$LOAD)"
+    echo "$DEVICE_NAME: LEVEL $LEVEL  ($REQ attests, load=$LOAD)"
     echo "============================================================"
 
     if [ "$LEVEL" -gt 0 ] 2>/dev/null; then
@@ -131,7 +137,6 @@ for LEVEL in $LEVELS; do
     fi
 
     CSV="$OUT/ca_load$LEVEL.csv"
-    rm -f "$CSV"
     # CA logs one bench row per quote INCLUDING the enroll, so count REQ+1:
     # enroll (seq 0) + REQ attests. The CA exits itself after that many.
     # > /dev/null: console printing is slow in QEMU.

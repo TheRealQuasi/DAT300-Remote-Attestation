@@ -17,8 +17,12 @@ PORT=${PORT:-5000}
 
 # /dev/tpmrm0 is the default for the RPi4's TPM
 # /dev/tpmrm1 is the default for the RPi4's fTPM
-DEVICE_NAME=${3:-tpm}
-DEVICE=${3:-/dev/tpmrm0}
+DEVICE=${DEVICE:-/dev/tpmrm0}
+if [ "$DEVICE" = "/dev/tpmrm1" ]; then
+    DEVICE_NAME=${DEVICE_NAME:-fTPM}
+else
+    DEVICE_NAME=${DEVICE_NAME:-tpm}
+fi
 
 # ------------------------- Run the enrollment ------------------------------------------------------------
 
