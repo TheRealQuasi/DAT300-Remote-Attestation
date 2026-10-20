@@ -45,5 +45,7 @@ else
     # Results are already local (default results dir): let the analyzer find them.
     echo "Analyzing results..."
     python3 "$ANALYZER"
-    echo "done -> $RESULTS_PATH"
+    echo "done -> FTPM/results"
 fi
+
+# ------------------------- End of script --------------------------------
