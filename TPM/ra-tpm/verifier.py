@@ -24,36 +24,81 @@ then type commands here:
              (saves its AK, boot PCRs 0-7 and each file's hash to
              enrolled_device.json)
     attest   send a fresh nonce, check the quote against the enrollment
-    test-replay  simulate replaying a previously accepted response; the
-                 stale quote should be rejected because its nonce is old
     quit     stop the verifier
 
 Needs: sudo apt install python3-cryptography
 """
 
 import argparse
+import csv
 import hashlib
 import json
 import os
 import secrets
 import socket
 import struct
+import time
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
+PORT = 5000
 CMD_ATTEST = b"A"
-NUM_PCRS = 9          # PCRs 0-7 and 16, in that order
+NUM_PCRS = 9          # PCRs 0-7 then 10, in that order
+PCR_IMA = 8           # index of PCR 10 in the list above (0..7 = 0..7, 8 = 10)
+
+DOS_OUT_DIR = "~/optee/dos/results"
+DEFAULT_STATE_FILE = "trusted/enrolled_device.json"
 
 
-def expected_pcr16(nonce, ref_hashes):
-    """The PCR 16 value the fTPM must produce if every file is unchanged."""
-    pcr = bytes(32)
-    pcr = hashlib.sha256(pcr + hashlib.sha256(nonce).digest()).digest()
-    for h in ref_hashes:
-        pcr = hashlib.sha256(pcr + h).digest()
+def replay_ima(log):
+    """Parse the binary IMA log -> list of per-entry (extend_value, path, hash).
+
+    Each record in /sys/kernel/security/ima/binary_runtime_measurements is:
+        pcr          (4 bytes, little-endian)
+        template_hash(20 bytes  - the SHA1 template digest field)
+        name_len     (4 bytes, LE) + template_name
+        data_len     (4 bytes, LE) + template_data
+
+    The value extended into the SHA256 PCR bank is sha256(template_data)
+    (confirmed on this hardware); a violation entry (all-zero template hash)
+    is extended as all 0xFF. path/hash come from the ima-ng d-ng/n-ng fields.
+    Raises ValueError on a malformed log.
+    """
+    entries, o = [], 0
+    while o < len(log):
+        _pcr, = struct.unpack_from("<I", log, o); o += 4
+        sha1 = log[o:o + 20]; o += 20
+        nlen, = struct.unpack_from("<I", log, o); o += 4
+        tname = log[o:o + nlen]; o += nlen
+        dlen, = struct.unpack_from("<I", log, o); o += 4
+        data = log[o:o + dlen]; o += dlen
+        if len(data) != dlen:
+            raise ValueError("truncated IMA log")
+
+        ext = b"\xff" * 32 if sha1 == bytes(20) else hashlib.sha256(data).digest()
+
+        path, digest_hex = None, None
+        if tname.rstrip(b"\0") in (b"ima-ng", b"ima-sig"):
+            l, = struct.unpack_from("<I", data, 0)
+            algo, _, digest = data[4:4 + l].partition(b"\0")
+            p = 4 + l
+            l2, = struct.unpack_from("<I", data, p)
+            path = data[p + 4:p + 4 + l2].rstrip(b"\0").decode(errors="replace")
+            if algo != b"sha256:":
+                raise ValueError(f"unsupported IMA hash {algo!r}")
+            digest_hex = digest.hex()
+        entries.append((ext, path, digest_hex))
+    return entries
+
+
+def chain(base, entries):
+    """Fold per-entry extend values into base, as the TPM does."""
+    pcr = base
+    for ext, _p, _h in entries:
+        pcr = hashlib.sha256(pcr + ext).digest()
     return pcr
 
 
@@ -74,7 +119,7 @@ def recv_exact(sock, n):
 
 def recv_msg(sock):
     length = struct.unpack(">I", recv_exact(sock, 4))[0]
-    if length > 65536:
+    if length > 16 * 1024 * 1024:            # IMA logs can be large
         raise ValueError("message too large")
     return recv_exact(sock, length)
 
@@ -133,66 +178,85 @@ def sig_to_der(blob):
 
 
 # ----------------------------------------------------------- checking
-def receive_attestation(conn):
-    """Read all five messages that make up one attestation response."""
-    return tuple(recv_msg(conn) for _ in range(5))
+def attest(conn, state_file, enroll, paths):
+    """Send nonce + file list, check the answer."""
+    nonce = secrets.token_bytes(32)
+    send_msg(conn, CMD_ATTEST + bytes([len(nonce)]) + nonce
+             + "\n".join(paths).encode())
+    print(f"  sent nonce {nonce.hex()[:16]}... + {len(paths)} files")
 
-
-def check_attestation(nonce, response, state_file, enroll, paths):
-    """Validate an attestation response against the nonce for this request."""
-    ak_blob, quote, sig, pcr_blob, hash_blob = response
+    ak_blob = recv_msg(conn)
+    quote = recv_msg(conn)
+    sig = recv_msg(conn)
+    pcr_blob = recv_msg(conn)
     if len(pcr_blob) != NUM_PCRS * 32:
         return "FAIL: wrong number of PCR values"
     pcrs = [pcr_blob[i * 32:(i + 1) * 32] for i in range(NUM_PCRS)]
+    hash_blob = recv_msg(conn)
     if len(hash_blob) != len(paths) * 32:
         return "FAIL: wrong number of file hashes"
-    hashes_now = [hash_blob[i * 32:(i + 1) * 32]
-                  for i in range(len(paths))]
+    hashes_now = [hash_blob[i * 32:(i + 1) * 32] for i in range(len(paths))]
 
-    # Is the quote really signed by this AK?
+    # 1. Is the quote really signed by this AK?
     try:
         ak_to_key(ak_blob).verify(sig_to_der(sig), quote,
                                   ec.ECDSA(hashes.SHA256()))
     except InvalidSignature:
         return "FAIL: bad signature"
 
-    # Is it fresh?
+    # 2. Is it fresh (our nonce)?
     q_nonce, pcr_digest = read_quote(quote)
     if q_nonce != nonce:
         return "FAIL: wrong nonce (replayed quote?)"
 
-    # Are the PCR values we were sent the ones the TPM signed?
+    # Are the PCR values we were sent the ones the fTPM signed?
     if hashlib.sha256(b"".join(pcrs)).digest() != pcr_digest:
         return "FAIL: PCR values don't match the signed quote"
 
-    # Are the file hashes the ones the TPM extended, after OUR nonce?
+    # Are the file hashes the ones the fTPM extended, after OUR nonce?
     if pcrs[8] != expected_pcr16(nonce, hashes_now):
         return "FAIL: file hashes don't match the signed PCR 16"
 
     if enroll:
+        os.makedirs(os.path.dirname(state_file) or ".", exist_ok=True)
         with open(state_file, "w") as f:
             json.dump({"ak": ak_blob.hex(),
                        "boot_pcrs": [p.hex() for p in pcrs[:8]],
-                       "files": {p: h.hex()
-                                 for p, h in zip(paths, hashes_now)}},
+                       "pcr10": cur_pcr10.hex(),
+                       "n_entries": len(entries),
+                       "files": files},
                       f, indent=2)
-        return f"ENROLLED ({len(paths)} files)"
+        return f"ENROLLED ({len(entries)} entries, {len(files)} files)"
 
+    # --- verification against the enrollment ---
     if not os.path.exists(state_file):
-        return "FAIL: not enrolled yet (type 'enroll' first)"
+        return "FAIL: not enrolled yet (run --enroll first)"
     with open(state_file) as f:
         known = json.load(f)
 
-    # Is it the device we know, running the software we expect?
     if known["ak"] != ak_blob.hex():
         return "FAIL: unknown device (AK differs)"
     if known["boot_pcrs"] != [p.hex() for p in pcrs[:8]]:
         return "FAIL: boot PCRs 0-7 changed since enrollment"
 
-    # Every file must still have the hash it had at enrollment.
-    for p, h in zip(paths, hashes_now):
-        if known["files"].get(p) != h.hex():
-            return f"FAIL: {p} has been modified (or is missing)"
+    n0 = known["n_entries"]
+    if len(entries) < n0:
+        return "FAIL: IMA log shorter than at enrollment (rebooted/reset?)"
+
+    # Chain the entries added since enrollment onto the enrolled PCR 10 anchor;
+    # it must reach the freshly-signed PCR 10. This ties the current log to the
+    # quote without needing the (non-zero) boot-time PCR start.
+    base = bytes.fromhex(known["pcr10"])
+    new_entries = entries[n0:]
+    if chain(base, new_entries) != cur_pcr10:
+        return "FAIL: IMA log does not extend the enrolled PCR 10"
+
+    # Tamper check: every file measured since enrollment must be known-good.
+    for _e, p, h in new_entries:
+        if p is None:
+            continue
+        if known["files"].get(p) != h:
+            return f"FAIL: {p} modified or not enrolled"
     return "TRUSTED"
 
 
@@ -216,15 +280,112 @@ def attest(conn, state_file, enroll, paths, replay_response=None):
     return result, live_response
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=5000)
-    ap.add_argument("--state", default="enrolled_device.json")
-    ap.add_argument("--file", action="append", default=[],
-                    metavar="PATH",
-                    help="file the attester must hash (repeatable)")
+# ----------------------------------------------------------- driver
+def parse_args():
+    ap = argparse.ArgumentParser(
+        description="Remote-attestation verifier (TPM + IMA).")
+    ap.add_argument("--port", type=int, default=PORT)
+    ap.add_argument("--state", default=DEFAULT_STATE_FILE)
+
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--enroll", action="store_true",
+                      help="send ONE enroll, then stop")
+    mode.add_argument("--benchmark", action="store_true",
+                      help="send attests nonstop, no verdict log (Ctrl-C to stop)")
+    mode.add_argument("--dos", action="store_true",
+                      help="send --count attests, log each verdict, then stop")
+
+    ap.add_argument("--requests", type=int, default=0,
+                    help="override the CA's BENCH_REQUESTS (0 = unlimited)")
+    ap.add_argument("--runs", type=int, default=0,
+                    help="number of runs in --dos (default 1)")
+    ap.add_argument("--timeout", type=float, default=120.0,
+                    help="per-attest answer timeout in seconds")
+
+    ap.add_argument("--load-level", default="0",
+                    help="label + filename for the DoS verdict CSV")
+    ap.add_argument("--dos-csv", metavar="FILE", default=None,
+                    help="override the DoS verdict CSV path")
+
     args = ap.parse_args()
-    files = args.file
+    args.auto = args.enroll or args.benchmark or args.dos
+    args.done = 0
+    args.count = args.requests * args.runs
+    if args.dos and args.dos_csv is None:
+        args.dos_csv = f"{DOS_OUT_DIR}/verifier_load{args.load_level}.csv"
+    return args
+
+
+def open_verdict_log(dos_csv):
+    """Open the DoS verdict CSV and write its header, or (None, None)."""
+    if not dos_csv:
+        return None, None
+    path = os.path.expanduser(dos_csv)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    f = open(path, "w", newline="")
+    w = csv.writer(f)
+    w.writerow(["seq", "unix_time", "result", "load_level"])
+    print(f"logging DoS verdicts to {path}")
+    return w, f
+
+
+def log_verdict(w, f, seq, result, load_level):
+    if w:
+        w.writerow([seq, f"{time.time():.3f}", result, load_level])
+        f.flush()
+
+
+def serve(conn, args, vw, vf):
+    """
+    Handle one CA connection.
+    Returns True to reconnect (benchmark: CA finished a run) or None to stop
+    the verifier (enroll done, DoS run done, denial, or quit).
+    """
+    while True:
+        if args.enroll:
+            cmd = "enroll"
+        elif args.auto:
+            time.sleep(0.2)
+            cmd = "attest"
+        else:
+            cmd = input("Command [enroll / attest / quit]: ").strip()
+            if cmd == "quit":
+                return None
+            if cmd not in ("enroll", "attest"):
+                continue
+
+        try:
+            result = attest(conn, args.state, cmd == "enroll")
+            send_msg(conn, result.encode())
+            print(f"  -> {result}")
+        except (ConnectionError, OSError) as e:
+            if args.dos:
+                # Timeout/drop under load: this attest and every remaining one
+                # count as denied. Stop the run (no reconnect = no hang).
+                print(f"  -> denied: {e}")
+                while args.done < args.count:
+                    log_verdict(vw, vf, args.done, "TIMEOUT/LOST", args.load_level)
+                    args.done += 1
+                return None
+            return True                  # benchmark: CA ended its run, reconnect
+        except ValueError as e:
+            print(f"  -> ERROR: {e}")
+            continue
+
+        if args.enroll:
+            print("  enroll done, stopping the verifier")
+            return None
+        if args.dos:
+            log_verdict(vw, vf, args.done, result.split(":")[0], args.load_level)
+        args.done += 1
+        if args.count and args.done >= args.count:
+            print(f"  done: {args.done} attests")
+            return None
+
+
+def main():
+    args = parse_args()
+    vw, vf = open_verdict_log(args.dos_csv)
 
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -236,46 +397,17 @@ def main():
         print(f"Waiting for the attester on port {args.port}...")
         conn, addr = srv.accept()
         print(f"Attester connected from {addr[0]}")
-        conn.settimeout(120)   # max wait for an answer from the fTPM
-
+        conn.settimeout(args.timeout)
         with conn:
-            # Keep one previously accepted response in memory for test-replay.
-            # It is cleared when this attester disconnects.
-            last_accepted_response = None
             while True:
-                cmd = input(
-                    "Command [enroll / attest / test-replay / quit]: "
-                ).strip()
+                cmd = input("Command [enroll / attest / quit]: ").strip()
                 if cmd == "quit":
                     return
-                if cmd not in ("enroll", "attest", "test-replay"):
+                if cmd not in ("enroll", "attest"):
                     continue
                 try:
-                    if cmd == "test-replay":
-                        if last_accepted_response is None:
-                            print("  -> Cannot test replay yet: run 'enroll' "
-                                  "or a successful 'attest' first.")
-                            continue
-
-                        result, _ = attest(
-                            conn, args.state, False, files,
-                            replay_response=last_accepted_response)
-                        send_msg(conn, result.encode())
-                        if result == "FAIL: wrong nonce (replayed quote?)":
-                            print("  -> REPLAY TEST PASSED: stale response "
-                                  "rejected by the nonce check")
-                        elif result == "TRUSTED":
-                            print("  -> REPLAY TEST FAILED: stale response "
-                                  "was accepted")
-                        else:
-                            print("  -> REPLAY TEST INCONCLUSIVE: response "
-                                  f"rejected for another reason: {result}")
-                        continue
-
-                    result, live_response = attest(
-                        conn, args.state, cmd == "enroll", files)
-                    if result == "TRUSTED" or result.startswith("ENROLLED ("):
-                        last_accepted_response = live_response
+                    result = attest(conn, args.state, cmd == "enroll",
+                                    files)
                     send_msg(conn, result.encode())
                     print(f"  -> {result}")
                 except (ConnectionError, OSError) as e:

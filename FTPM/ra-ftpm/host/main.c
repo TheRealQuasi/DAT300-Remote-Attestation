@@ -144,8 +144,6 @@ static void measure_file(ESYS_CONTEXT *esys, const char *path,
 	for (uint32_t i = 0; i < d->count; i++)
 		if (d->digests[i].hashAlg == TPM2_ALG_SHA256)
 			memcpy(hash_out, d->digests[i].digest.sha256, 32);
-	if (!bench_on())
-		printf("  hashed %s%s\n", path, f ? "" : " (MISSING)");
 	Esys_Free(d);
 }
 
@@ -227,20 +225,30 @@ int main(int argc, char *argv[])
 	};
 	TPMT_SIG_SCHEME scheme = { .scheme = TPM2_ALG_NULL }; /* use AK's */
 
-	const char *host = "10.0.2.2";
-	const char *port = "5000";
+	const char *host   = "127.0.0.1";
+	const char *port   = "5000";
+	const char *device = "/dev/tpmrm1";     /* default: Pi fTPM */
 
-	if (argc == 3) {
+	if (argc >= 3) {
 		host = argv[1];
 		port = argv[2];
-	} else if (argc != 1) {
-		fprintf(stderr, "Usage: %s [<verifier-ip> <port>]\n", argv[0]);
+	}
+	if (argc == 4) {
+		device = argv[3];                   /* e.g. /dev/tpmrm0 on QEMU */
+	} else if (argc != 1 && argc != 3) {
+		fprintf(stderr, "Usage: %s [<verifier-ip> <port> [<tpm-device>]]\n", argv[0]);
 		return 1;
 	}
+
+	/* build "device:<path>" for the TCTI */
+	char module[128];
+	snprintf(module, sizeof(module), "device:%s", device);
+
 	setvbuf(stdout, NULL, _IOLBF, 0);   /* print each line immediately */
 
 	/* Open the fTPM and create the AK once, at start-up. */
-	check(Tss2_TctiLdr_Initialize("device:/dev/tpmrm0", &tcti), "open TPM");
+	// check(Tss2_TctiLdr_Initialize("device: %", &tcti), "open TPM");
+	check(Tss2_TctiLdr_Initialize(module, &tcti), "open TPM");
 	check(Esys_Initialize(&esys, tcti, NULL), "Esys_Initialize");
 	check(Esys_CreatePrimary(esys, ESYS_TR_RH_ENDORSEMENT,
 				 ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
@@ -368,7 +376,7 @@ int main(int argc, char *argv[])
 		}
 
 		close(fd);
-		
+
 		const char *enroll = getenv("ENROLL");
 		if (bench_on() || (enroll && strcmp(enroll, "True") == 0)) {
 			printf("Verifier disconnected, run complete\n");

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ftpm-dos-analyzer.py - availability analysis of the RA under fTPM load.
+dos-analyzer.py - availability analysis of the RA under TPM load.
 
 Pairs two per-level CSVs from one DoS run and reports availability:
 
@@ -20,12 +20,17 @@ Per load level N it reports:
     n          completed attestations (matched CA latency)
     denied     requests the verifier did not get answered in time
     success%   n / (n + denied)
-    p50/p95/p99/max   fTPM latency over completed requests (ms)
+    p50/p95/p99/max   latency over completed requests (ms)
+
+The --device label (the module under test: ftpm, tpm, tpm-file, ...) flows
+through to the titles, the latency-metric name, and the default output file
+names, so each module's summary and plot are self-describing.
 
 Usage:
-    python3 ftpm-dos-analyzer.py                 # auto-discover under results dir
-    python3 ftpm-dos-analyzer.py --warmup 1      # also drop the first attest
-    python3 ftpm-dos-analyzer.py ca_load*.csv verifier_load*.csv   # explicit
+    python3 dos-analyzer.py                       # auto-discover under results dir
+    python3 dos-analyzer.py --device tpm-file     # label the outputs
+    python3 dos-analyzer.py --warmup 1            # also drop the first attest
+    python3 dos-analyzer.py ca_load*.csv verifier_load*.csv   # explicit
 
 Needs matplotlib for the plot:  pip install --break-system-packages matplotlib
 (The text summary works without it.)
@@ -48,6 +53,24 @@ OUT_DIR = "~/shared/DAT300-Remote-Attestation/FTPM/results"
 
 # Verifier results that mean "this request was NOT answered in time".
 DENIED_TAGS = {"TIMEOUT/LOST"}
+
+# Used when no device is specified. (title, plot, and output file names are device-specific.)
+DEVICE = "ftpm"
+
+# Per-module display name + latency-metric label. Unknown labels fall back to
+# the label itself (see meta()), so new modules work without editing this.
+DEVICE_META = {
+    "ftpm":     ("fTPM",             "fTPM latency"),
+    "tpm":      ("TPM (IMA)",        "TPM latency"),
+    "tpm-file": ("TPM (file/PCR16)", "TPM latency"),
+    "idle":     ("idle baseline",    "window"),
+}
+
+
+def meta(device):
+    """(display name, latency-metric label) for a module/device label."""
+    return DEVICE_META.get(device, (device, f"{device} latency"))
+
 
 def pct(v, p):
     """Same percentile convention as the CA-side benchmark analyzer."""
@@ -169,8 +192,10 @@ def summarise(levels, warmup):
     return out
 
 
-def format_text(rows, warmup):
-    lines = [f"load levels: {len(rows)} (warm-up {warmup} attests discarded "
+def format_text(rows, warmup, device):
+    disp, _ = meta(device)
+    lines = [f"device: {device} ({disp})",
+             f"load levels: {len(rows)} (warm-up {warmup} attests discarded "
              f"per side)", ""]
     for s in rows:
         succ = f"{s['succ']:5.1f}%" if not math.isnan(s["succ"]) else "   -  "
@@ -195,7 +220,7 @@ def ensure_dir(path):
     return path
 
 
-def make_plot(rows, path):
+def make_plot(rows, path, device):
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -205,6 +230,8 @@ def make_plot(rows, path):
               "run 'pip install --break-system-packages matplotlib')",
               file=sys.stderr)
         return
+
+    disp, lat_label = meta(device)
 
     xs, labels = [], []
     for i, s in enumerate(rows):
@@ -220,8 +247,8 @@ def make_plot(rows, path):
     ax[0].plot(xs, [s["p50"] for s in rows], "o-", label="p50")
     ax[0].plot(xs, [s["p95"] for s in rows], "s-", label="p95")
     ax[0].plot(xs, [s["p99"] for s in rows], "^-", label="p99")
-    ax[0].set_ylabel("fTPM latency (ms)")
-    ax[0].set_title("CA-side fTPM latency (completed requests) vs load")
+    ax[0].set_ylabel(f"{lat_label} (ms)")
+    ax[0].set_title(f"CA-side {disp} latency (completed requests) vs load")
     ax[0].legend()
     ax[0].grid(True, alpha=0.3)
 
@@ -240,10 +267,10 @@ def make_plot(rows, path):
     ax[1].set_ylabel("success rate (%)")
     ax[1].set_ylim(-5, 105)
     ax[1].set_xlabel("contending TPM workers on the attester device")
-    ax[1].set_title("Attestation success rate vs load")
+    ax[1].set_title(f"Attestation success rate vs load - {disp}")
     ax[1].grid(True, alpha=0.3)
     ax[1].set_xticks(xs)
-    ax[1].set_xticklabels(labels, rotation=0, ha="right")
+    ax[1].set_xticklabels(labels, rotation=0, ha="center")
 
     fig.tight_layout()
     fig.savefig(path, dpi=120)
@@ -261,6 +288,8 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--device", default=DEVICE,
+                    help=f"module/device label (default {DEVICE}); names titles + outputs")
     ap.add_argument("csv", nargs="*",
                     help="explicit CSVs (CA and/or verifier, globs ok); "
                          "sorted into the two kinds by name. Default: "
@@ -271,11 +300,19 @@ def main():
                     help=f"verifier verdict files (default {VERIFIER_GLOB})")
     ap.add_argument("--warmup", type=int, default=0,
                     help="discard the first N attests (by seq) from both sides")
-    ap.add_argument("--out", default=OUT_DIR + "/dos-summary.txt",
-                    help="also write the text summary here")
-    ap.add_argument("--plot", default=OUT_DIR + "/dos-summary.png",
-                    help="write the plot here ('' to skip)")
+    ap.add_argument("--out", default=None,
+                    help="also write the text summary here "
+                         "(default OUT_DIR/<device>-dos-summary.txt)")
+    ap.add_argument("--plot", default=None,
+                    help="write the plot here ('' to skip; "
+                         "default OUT_DIR/<device>-dos-summary.png)")
     a = ap.parse_args()
+
+    # Fill the device-specific default output names now that --device is known.
+    if a.out is None:
+        a.out = OUT_DIR + f"/{a.device}-dos-summary.txt"
+    if a.plot is None:
+        a.plot = OUT_DIR + f"/{a.device}-dos-summary.png"
 
     if a.csv:
         # Explicit files: sort each path into CA vs verifier by its name.
@@ -299,7 +336,7 @@ def main():
 
     levels = pair_files(ca, ver)
     summary = summarise(levels, a.warmup)
-    text = format_text(summary, a.warmup)
+    text = format_text(summary, a.warmup, a.device)
     print(text)
 
     if a.out:
@@ -308,7 +345,7 @@ def main():
             f.write(text + "\n")
 
     if a.plot and any(not math.isnan(s["p50"]) for s in summary):
-        make_plot(summary, ensure_dir(a.plot))
+        make_plot(summary, ensure_dir(a.plot), a.device)
 
 
 if __name__ == "__main__":
