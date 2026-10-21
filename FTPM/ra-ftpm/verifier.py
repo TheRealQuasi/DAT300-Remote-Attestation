@@ -220,6 +220,8 @@ def parse_args():
                       help="send attests nonstop, no verdict log (Ctrl-C to stop)")
     mode.add_argument("--dos", action="store_true",
                       help="send --count attests, log each verdict, then stop")
+    mode.add_argument("--test-replay", action="store_true",
+                      help="perform one automatic replay test, then stop")
 
     ap.add_argument("--requests", type=int, default=0,
                     help="override the CA's BENCH_REQUESTS (0 = unlimited)")
@@ -235,7 +237,7 @@ def parse_args():
 
     args = ap.parse_args()
     args.file = args.file or [DEFAULT_PROTECTED_FILE]
-    args.auto = args.enroll or args.benchmark or args.dos
+    args.auto = args.enroll or args.benchmark or args.dos or args.test_replay
     args.done = 0
     args.count = args.requests * args.runs             # unlimited; the CA ends each run
     if args.dos and args.dos_csv is None:
@@ -273,6 +275,12 @@ def serve(conn, args, vw, vf):
     while True:
         if args.enroll:
             cmd = "enroll"
+        elif args.test_replay:
+            cmd = (
+                "attest"
+                if last_accepted_response is None
+                else "test-replay"
+        )
         elif args.auto:
             time.sleep(0.2)
             cmd = "attest"
@@ -300,20 +308,29 @@ def serve(conn, args, vw, vf):
             if result == "TRUSTED" or result.startswith("ENROLLED ("):
                 if cmd != "test-replay":
                     last_accepted_response = live_response
-
+            if args.test_replay and cmd == "attest" and result != "TRUSTED":
+                print(
+                    "  -> REPLAY TEST INCONCLUSIVE: "
+                    f"baseline attestation failed: {result}"
+                )
+                return None
             if cmd == "test-replay":
                 if result == "FAIL: wrong nonce (replayed quote?)":
-                    print("  -> REPLAY TEST PASSED: stale response rejected "
-                          "by the nonce check")
+                    print(
+                        "  -> REPLAY TEST PASSED: stale response rejected "
+                        "by the nonce check"
+                    )
                 elif result == "TRUSTED":
                     print("  -> REPLAY TEST FAILED: stale response was accepted")
                 else:
-                    print("  -> REPLAY TEST INCONCLUSIVE: response rejected "
-                          f"for another reason: {result}")
-                # A replay test is interactive validation, not a benchmark/DoS
-                # request, so it must not affect counters or verdict logs.
+                    print(
+                        "  -> REPLAY TEST INCONCLUSIVE: response rejected "
+                        f"for another reason: {result}"
+                    )
+                # Replay tests do not affect benchmark/DoS counters or logs.
+                if args.test_replay:
+                    return None
                 continue
-
             print(f"  -> {result}")
         except (ConnectionError, OSError) as e:
             if args.dos:
@@ -324,11 +341,13 @@ def serve(conn, args, vw, vf):
                     log_verdict(vw, vf, args.done, "TIMEOUT/LOST", args.load_level)
                     args.done += 1
                 return None
+            if args.test_replay:
+                print(f"  -> REPLAY TEST ABORTED: {e}")
+                return None
             return True                # benchmark: CA ended its run, reconnect
         except ValueError as e:
             print(f"  -> ERROR: {e}")
             continue
-
         if args.enroll:
             print("  enroll done, stopping the verifier")
             return None
