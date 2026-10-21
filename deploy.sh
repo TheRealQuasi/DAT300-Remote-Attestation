@@ -48,6 +48,13 @@ cp "$REPO/FTPM/ftpm-shells/ftpm-dos.sh" "$OPTEE/dos/"
 chmod +x "$OPTEE/dos/ftpm-dos.sh"
 echo "FTPM/ftpm-shells/ftpm-dos.sh  		-> $OPTEE/dos/"
 
+# replay-test script -> ~/optee/replay (= /mnt/host/replay inside QEMU)
+# The PC-side ftpm-replay-verifier.sh remains in the repository.
+mkdir -p "$OPTEE/replay"
+cp "$REPO/FTPM/ftpm-shells/ftpm-replay.sh" "$OPTEE/replay/"
+chmod +x "$OPTEE/replay/ftpm-replay.sh"
+echo "FTPM/ftpm-shells/ftpm-replay.sh -> $OPTEE/replay/"
+
 # DEPLOY TPM
 # cp -r "$REPO/TPM/..." "$OPTEE/..."
 
