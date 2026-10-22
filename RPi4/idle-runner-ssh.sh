@@ -11,7 +11,7 @@
 # ------------------------- Change these parameters to change the benchmark -------------------------
 
 RUNS=${1:-10}
-REQ=${2:-20}
+REQ=${2:-120}
 WINDOW=${3:-0.1}
 
 # ------------------------- Don't change these parameters unless you know what you're doing -------------------------

@@ -11,7 +11,7 @@
 # ------------------------- Change these parameters to change the benchmark -------------------------
 
 RUNS=${1:-10}
-REQ=${2:-20}
+REQ=${2:-120}
 
 # ------------------------- Don't change these parameters unless you know what you're doing -------------------------
 
@@ -65,7 +65,7 @@ if [ "$USE_SSH" = "true" ]; then
     echo "Analyzing results..."
     python3 "$ANALYZER" "$CSV_PATH"/run*.csv \
         --out "$RESULTS_PATH"/$LABEL-benchmark-summary.txt --plot "$RESULTS_PATH"/$LABEL-benchmark-summary.png \
-        --device "$LABEL"
+        --device "$LABEL" --warmup 20
     echo "done -> $CSV_PATH"
 else
     # Results are already local (default results dir): let the analyzer find them.

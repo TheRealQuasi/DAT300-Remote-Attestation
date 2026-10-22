@@ -45,7 +45,9 @@ if [ "$USE_SSH" = "true" ]; then
     --tpm      $TPM_CSV_PATH \
     --tpm-file $TPM_FILE_CSV_PATH \
     --out  $RESULTS_PATH/compare-benchmark-summary.txt \
-    --plot $RESULTS_PATH/compare-benchmark-summary.png
+    --plot $RESULTS_PATH/compare-benchmark-summary.png \
+    --warmup 20
+    echo "done -> $RESULTS_PATH"
 else
     # Results are already local (default results dir): let the analyzer find them.
     echo "Analyzing results..."

@@ -10,9 +10,9 @@
 
 # ------------------------- Change these parameters to change the benchmark -------------------------
 
-LEVELS=${LEVELS:-"0 2 4 8 16 32"}
-REQ=${1:-10}
-TIMEOUT=${TIMEOUT:-20}
+LEVELS=${LEVELS:-"0 2 4 6 8 10 12 14 16 18 20"}
+REQ=${1:-120}
+TIMEOUT=${TIMEOUT:-1}
 
 # ------------------------- Don't change these parameters unless you know what you're doing -------------------------
 
@@ -53,7 +53,7 @@ rm -f "$CSV_PATH"/verifier_load*.csv   # <-- clear stale runs from previous DoS 
 # The sweep - one verifier round per level.
 for LEVEL in $LEVELS; do
     echo "============================================================"
-    echo "$LABEL: LEVEL $LEVEL  (waiting for the attester to connect...)"
+    echo "$LABEL: LEVEL $LEVEL TIMEOUT: $TIMEOUT (waiting for the attester to connect...)"
     echo "============================================================"
     # DoS policy: --dos logs verdicts and implies auto-send. --no-auto-enroll
     # because enrollment is done ONCE up front, so only attests flow here
@@ -75,7 +75,7 @@ if [ "$USE_SSH" = "true" ]; then
     echo "Analyzing results..."
     python3 "$ANALYZER" "$CSV_PATH"/*.csv \
         --out "$RESULTS_PATH"/$LABEL-dos-summary.txt --plot "$RESULTS_PATH"/$LABEL-dos-summary.png \
-        --device "$LABEL"
+        --device "$LABEL" --warmup 20
     echo "done -> $CSV_PATH"
 else
     # Results are already local (default results dir): let the analyzer find them.

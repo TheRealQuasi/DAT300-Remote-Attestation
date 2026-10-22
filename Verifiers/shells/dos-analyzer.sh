@@ -45,7 +45,7 @@ if [ "$USE_SSH" = "true" ]; then
     echo "Analyzing results..."
     python3 "$ANALYZER" "$CSV_PATH"/*.csv \
         --out "$RESULTS_PATH"/$LABEL-dos-summary.txt --plot "$RESULTS_PATH"/$LABEL-dos-summary.png \
-        --device "$LABEL"
+        --device "$LABEL" --warmup 20
     echo "done -> $CSV_PATH"
 else
     # Results are already local (default results dir): let the analyzer find them.

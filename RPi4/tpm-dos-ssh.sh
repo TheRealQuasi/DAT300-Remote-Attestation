@@ -10,8 +10,8 @@
 
 # ------------------------- Change these parameters to change the benchmark -------------------------
 
-LEVELS=${LEVELS:-"0 2 4 8 16 32"}
-REQ=${1:-10}
+LEVELS=${LEVELS:-"0 2 4 6 8 10 12 14 16 18 20"}
+REQ=${1:-120}
 LOAD=${LOAD:-Null}
 
 # ------------------------- Don't change these parameters unless you know what you're doing -------------------------
