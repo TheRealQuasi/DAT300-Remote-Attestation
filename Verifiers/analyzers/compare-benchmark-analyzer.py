@@ -55,7 +55,7 @@ import re
 import statistics
 import sys
 
-OUT_DIR = "~/shared/DAT300-Remote-Attestation/FTPM/results/compare"
+OUT_DIR = "~/shared/DAT300-Remote-Attestation/RPi4/results/compare"
 
 # label -> (display name, bar colour, is this module "timed"?)
 #   idle is NOT timed: its t_ftpm_ns is just the idle sampling window.
@@ -78,20 +78,30 @@ def natural_key(path):
     nums = re.findall(r"\d+", path)
     return (int(nums[-1]) if nums else 0, path)
 
-
 def find_csvs(path):
-    """A directory -> the bench CSVs under it; otherwise treat as a glob."""
+    """A directory -> its per-round benchmark CSVs; otherwise treat as a glob.
+
+    You normally pass the exact folder holding the CSVs (e.g.
+    .../ftpm/benchmark-data or .../idle/idle-data). If that folder has no CSVs
+    directly, we also look one level down in benchmark-data/ or idle-data/, so
+    passing the parent label folder (.../ftpm) works too.
+
+    When a directory is given, only per-round files (run*.csv / idle_run*.csv)
+    are taken, so DoS CSVs sitting in a sibling dos-data/ folder can never
+    sneak into the averages. An explicit glob/file path is trusted as given.
+    """
     path = os.path.expanduser(path)
-    if os.path.isdir(path):
-        cands = []
-        for d in (path,
-                  os.path.join(path, "benchmark-data"),
-                  os.path.join(path, "idle-data"),
-                  os.path.join(path, "dos-data")):
-            cands += glob.glob(os.path.join(d, "*.csv"))
+    from_dir = os.path.isdir(path)
+    if from_dir:
+        cands = glob.glob(os.path.join(path, "*.csv"))
+        if not cands:
+            for sub in ("benchmark-data", "idle-data"):
+                cands = glob.glob(os.path.join(path, sub, "*.csv"))
+                if cands:
+                    break
     else:
         cands = glob.glob(path)
-    # Keep only files that actually have the bench columns.
+
     good = []
     for p in cands:
         try:
@@ -112,7 +122,8 @@ def read_rows(path):
 def per_round(path, warmup):
     """One dict per round: pooled U and mean request time (ms) for that round."""
     rounds = []
-    for p in find_csvs(path):
+    files = find_csvs(path)
+    for p in files:
         rows = [r for r in read_rows(p) if int(r["seq"]) >= warmup]
         if not rows:
             continue
@@ -126,7 +137,7 @@ def per_round(path, warmup):
             t_mean=statistics.fmean(times) if times else None,
             times=times,
         ))
-    return rounds
+    return rounds, [os.path.basename(p) for p in files]
 
 
 def agg(rounds):
@@ -265,14 +276,16 @@ def main():
     data = {}
     lines = [f"comparison: {', '.join(labels)}  (warm-up {a.warmup} per round)", ""]
     for l in labels:
-        rounds = per_round(selected[l], a.warmup)
+        rounds, files = per_round(selected[l], a.warmup)
         if not rounds:
-            sys.exit(f"{l}: no bench CSVs found under {selected[l]!r}")
+            sys.exit(f"{l}: no per-round benchmark CSVs (run*.csv / idle_run*.csv) "
+                     f"found under {selected[l]!r}")
         s = agg(rounds)
         data[l] = s
         disp = meta(l)[0]
         u_extra = f"   (U x {a.cores} = {s['u_mean'] * a.cores:.4f})" if a.cores else ""
-        lines.append(f"{disp:<18} rounds={s['n_rounds']}  req={s['n_req']}")
+        lines.append(f"{disp:<18} rounds={s['n_rounds']}  req={s['n_req']}  "
+                     f"files={len(files)}")
         lines.append(f"{'':<18} U mean={s['u_mean']:.4f} +/- {s['u_sd']:.4f}"
                      f"   (pooled {s['u_pooled']:.4f}){u_extra}")
         if meta(l)[2] and not math.isnan(s["t_mean"]):

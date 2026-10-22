@@ -38,7 +38,7 @@ if [ "$USE_SSH" = "true" ]; then
         rm -f "$CSV_PATH"/$LABEL*.csv         # <-- clear stale runs from previous benchmarks
 
         # Results are on the Pi: pull them over scp, then analyse those.
-        scp "$RPI4":~/results/$DEVICE_NAME*.csv "$CSV_PATH"/
+        scp "$RPI4":~/results/$LABEL*.csv "$CSV_PATH"/
     fi
 
     echo "Analyzing results..."
