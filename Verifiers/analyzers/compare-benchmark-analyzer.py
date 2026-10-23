@@ -206,7 +206,7 @@ def make_plot(labels, data, path, cores):
     u_sd   = [data[l]["u_sd"]   * scale * 100 for l in labels]   # same scaling as the mean
 
     x = range(len(labels))
-    bars = axes[0].bar(x, u_mean, yerr=u_sd, capsize=4, color=colours)
+    bars = axes[0].bar(x, u_mean, color=colours)
     axes[0].set_xticks(list(x))
     axes[0].set_xticklabels(disp, rotation=0, ha="center")
     axes[0].set_ylabel("CPU utilisation (% of one core)" if cores
@@ -219,9 +219,9 @@ def make_plot(labels, data, path, cores):
         axes[0].annotate(f"{v:.2f}%", (b.get_x() + b.get_width() / 2, v),
                          ha="center", va="bottom", fontsize=8)
 
-    axes[0].axhline(max_pct, color="black", linestyle="--", linewidth=0.8)
-    axes[0].annotate("max (all cores busy)" if cores else "max (100 %)",
-                     (len(labels) - 0.5, max_pct), ha="right", va="bottom", fontsize=8)
+    # axes[0].axhline(max_pct, color="black", linestyle="--", linewidth=0.8)
+    # axes[0].annotate("max (all cores busy)" if cores else "max (100 %)",
+    #                  (len(labels) - 0.5, max_pct), ha="right", va="bottom", fontsize=8)
 
     # ---- panel 2: request time (timed modules only) ----------------------
     if timed:
