@@ -140,7 +140,7 @@ for LEVEL in $LEVELS; do
     # CA logs one bench row per quote INCLUDING the enroll, so count REQ+1:
     # enroll (seq 0) + REQ attests. The CA exits itself after that many.
     # > /dev/null: console printing is slow in QEMU.
-    BENCH_OUT="$CSV" BENCH_REQUESTS=$((REQ)) "$CA" "$IP" "$PORT" "$DEVICE" >/dev/null
+    timeout 600 env BENCH_OUT="$CSV" BENCH_REQUESTS=$((REQ)) "$CA" "$IP" "$PORT" "$DEVICE" >/dev/null
     echo "  done -> $CSV"
 
     stop_load

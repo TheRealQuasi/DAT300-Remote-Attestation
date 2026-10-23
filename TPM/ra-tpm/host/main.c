@@ -1,29 +1,7 @@
 /*
- * ra_ftpm_ca.c - remote-attestation relay (attester) for OP-TEE's fTPM.
- *
- * The CA is ONLY a relay: it never decides what is measured and never
- * sees a secret. It connects to the verifier once and stays connected.
- * Each time the verifier sends an attest command (nonce + file list):
- *   1. MEASURE into PCR 16: reset it, extend the nonce, then let the fTPM
- *      hash every file the verifier asked for and extend each hash
- *   2. ask the fTPM for a quote (PCRs 0-7 + 16 + the nonce, signed by AK)
- *   3. send the AK public key, the quote, the signature, the PCR values
- *      and the hash of each file (so the verifier can see which changed)
- *   4. print the verifier's answer, then wait for the next command
- * If the connection is lost, it reconnects automatically.
- *
- * PCRs 0-7 can't be reset from Linux, only extended. So even root in
- * Linux can make them wrong (-> FAIL) but never set them back to the
- * enrolled values. What goes into them is decided before Linux runs.
- *
- * Network messages are simply [4-byte big-endian length][data]:
- *   verifier -> CA : 'A' + nonce length (1 byte) + nonce + file list
- *                    (file list = paths separated by '\n')
- *   CA -> verifier : AK public key, quote, signature, PCR values,
- *                    file hashes (32 bytes each, in file-list order)
- *   verifier -> CA : verdict text
- *
- * Usage: ra_ftpm_ca <verifier-ip> <port>
+ * ra_tpm_ca.c - remote-attestation relay (attester) for OP-TEE's TPM.
+ * Nothing here...
+ * Usage: ra_tpm_ca <verifier-ip> <port>
  */
 
 #include <arpa/inet.h>
