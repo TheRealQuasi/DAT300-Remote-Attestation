@@ -1,18 +1,30 @@
 #!/usr/bin/env python3
 """
-verifier.py - remote-attestation verifier for the TPM + IMA attester.
+verifier.py - remote-attestation verifier for ra_ftpm_ca (runs on Ubuntu).
 
-Instead of a verifier-chosen file list measured into PCR 16 (the fTPM
-design), this verifies the attester's IMA measurement log against PCR 10:
-the attester sends its binary IMA runtime measurements, we replay them to
-reconstruct PCR 10, and check that reconstruction equals the PCR 10 value
-the TPM signed in the quote. Enrollment records the known-good file set;
-later attests must match it.
+    python3 verifier.py --file /root/protected.txt [--file ...]
 
-Three non-interactive modes (pick one); without any, it is interactive:
-    --enroll      send ONE enroll, then stop            (run once per boot)
-    --benchmark   send attests nonstop, no log          (CA drives run length)
-    --dos         send --count attests, log each verdict to a CSV, then stop
+The verifier decides which files the attester must hash. Every attest
+command carries a fresh nonce + that file list. The fTPM then builds
+PCR 16 from scratch:
+
+    PCR16 = 0
+    PCR16 = SHA256(PCR16 || SHA256(nonce))
+    PCR16 = SHA256(PCR16 || SHA256(file))      for each file, in order
+
+and signs PCRs 0-7 + 16 together with the nonce. The CA also sends the
+hash of each file; the verifier only accepts them if replaying them
+gives exactly the signed PCR 16. At enrollment those hashes are saved
+as the known-good values; later rounds must match them.
+
+Waits for the attester to connect. The attester stays connected; you
+then type commands here:
+
+    enroll   send a nonce, check the quote, and trust this device
+             (saves its AK, boot PCRs 0-7 and each file's hash to
+             enrolled_device.json)
+    attest   send a fresh nonce, check the quote against the enrollment
+    quit     stop the verifier
 
 Needs: sudo apt install python3-cryptography
 """
@@ -166,21 +178,24 @@ def sig_to_der(blob):
 
 
 # ----------------------------------------------------------- checking
-def attest(conn, state_file, enroll):
-    """Send nonce, then check the quote + IMA log the attester returns."""
+def attest(conn, state_file, enroll, paths):
+    """Send nonce + file list, check the answer."""
     nonce = secrets.token_bytes(32)
-    send_msg(conn, CMD_ATTEST + bytes([len(nonce)]) + nonce)
-    print(f"  sent nonce {nonce.hex()[:16]}...")
+    send_msg(conn, CMD_ATTEST + bytes([len(nonce)]) + nonce
+             + "\n".join(paths).encode())
+    print(f"  sent nonce {nonce.hex()[:16]}... + {len(paths)} files")
 
-    ak_blob  = recv_msg(conn)
-    quote    = recv_msg(conn)
-    sig      = recv_msg(conn)
+    ak_blob = recv_msg(conn)
+    quote = recv_msg(conn)
+    sig = recv_msg(conn)
     pcr_blob = recv_msg(conn)
-    ima_log  = recv_msg(conn)
-
     if len(pcr_blob) != NUM_PCRS * 32:
         return "FAIL: wrong number of PCR values"
     pcrs = [pcr_blob[i * 32:(i + 1) * 32] for i in range(NUM_PCRS)]
+    hash_blob = recv_msg(conn)
+    if len(hash_blob) != len(paths) * 32:
+        return "FAIL: wrong number of file hashes"
+    hashes_now = [hash_blob[i * 32:(i + 1) * 32] for i in range(len(paths))]
 
     # 1. Is the quote really signed by this AK?
     try:
@@ -194,24 +209,14 @@ def attest(conn, state_file, enroll):
     if q_nonce != nonce:
         return "FAIL: wrong nonce (replayed quote?)"
 
-    # 3. Are the PCR values we were sent the ones the TPM signed?
+    # Are the PCR values we were sent the ones the fTPM signed?
     if hashlib.sha256(b"".join(pcrs)).digest() != pcr_digest:
         return "FAIL: PCR values don't match the signed quote"
 
-    # 4. Parse the IMA log. PCR 10 does NOT start at zero on this board, so we
-    #    cannot recompute the absolute PCR from the log alone. Instead we anchor
-    #    to the PCR 10 value captured at enrollment and check that the NEW log
-    #    entries chain from it to the currently-signed PCR 10 (proven correct
-    #    with the sha256(template_data) extend).
-    cur_pcr10 = pcrs[PCR_IMA]
-    try:
-        entries = replay_ima(ima_log)
-    except (ValueError, struct.error) as e:
-        return f"FAIL: bad IMA log ({e})"
-    files = {p: h for (_e, p, h) in entries if p is not None}
+    # Are the file hashes the ones the fTPM extended, after OUR nonce?
+    if pcrs[8] != expected_pcr16(nonce, hashes_now):
+        return "FAIL: file hashes don't match the signed PCR 16"
 
-    # --- enrollment: record the device, the anchor PCR 10, the log length,
-    #     and the known-good file set ---
     if enroll:
         os.makedirs(os.path.dirname(state_file) or ".", exist_ok=True)
         with open(state_file, "w") as f:
@@ -253,6 +258,26 @@ def attest(conn, state_file, enroll):
         if known["files"].get(p) != h:
             return f"FAIL: {p} modified or not enrolled"
     return "TRUSTED"
+
+
+def attest(conn, state_file, enroll, paths, replay_response=None):
+    """Send a fresh challenge and validate the live or cached response.
+
+    During a replay test, the real response to the fresh challenge is read and
+    discarded to keep the stream synchronized, while the cached response is
+    passed to the exact same validation logic. Returns (result, live_response).
+    """
+    nonce = secrets.token_bytes(32)
+    send_msg(conn, CMD_ATTEST + bytes([len(nonce)]) + nonce
+             + "\n".join(paths).encode())
+    print(f"  sent nonce {nonce.hex()[:16]}... + {len(paths)} files")
+
+    live_response = receive_attestation(conn)
+    response_to_check = (replay_response if replay_response is not None
+                         else live_response)
+    result = check_attestation(nonce, response_to_check, state_file,
+                               enroll, paths)
+    return result, live_response
 
 
 # ----------------------------------------------------------- driver
@@ -368,13 +393,28 @@ def main():
     srv.listen(1)
 
     while True:
+        done = 0
         print(f"Waiting for the attester on port {args.port}...")
         conn, addr = srv.accept()
         print(f"Attester connected from {addr[0]}")
         conn.settimeout(args.timeout)
         with conn:
-            if serve(conn, args, vw, vf) is None:
-                return
+            while True:
+                cmd = input("Command [enroll / attest / quit]: ").strip()
+                if cmd == "quit":
+                    return
+                if cmd not in ("enroll", "attest"):
+                    continue
+                try:
+                    result = attest(conn, args.state, cmd == "enroll",
+                                    files)
+                    send_msg(conn, result.encode())
+                    print(f"  -> {result}")
+                except (ConnectionError, OSError) as e:
+                    print(f"  -> connection lost: {e}")
+                    break          # go back and wait for a reconnect
+                except ValueError as e:
+                    print(f"  -> ERROR: {e}")
 
 
 if __name__ == "__main__":
