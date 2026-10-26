@@ -12,7 +12,7 @@
 
 LEVELS=${LEVELS:-"0 2 4 6 8 10 12 14 16 18 20"}
 REQ=${1:-120}
-LOAD=${LOAD:-Null}
+LOAD=${LOAD:-quote}
 
 # ------------------------- Don't change these parameters unless you know what you're doing -------------------------
 
