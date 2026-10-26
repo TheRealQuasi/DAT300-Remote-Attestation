@@ -40,6 +40,15 @@ PCR_IMA = 8           # index of PCR 10 in the list above (0..7 = 0..7, 8 = 10)
 DOS_OUT_DIR = "~/optee/dos/results"
 DEFAULT_STATE_FILE = "trusted/enrolled_device.json"
 
+# Number of messages the CA sends back per attest (ak, quote, sig, pcrs, log).
+N_RESPONSE_MSGS = 5
+
+
+class AttestTimeout(Exception):
+    """Raised (DoS mode only) when one attest exceeds the per-request timeout
+    but the CA is still alive and the stream has been re-synced, so the sweep
+    can record this one as denied and keep going."""
+
 
 def replay_ima(log):
     """Parse the binary IMA log -> list of per-entry (extend_value, path, hash).
@@ -112,6 +121,30 @@ def recv_msg(sock):
     return recv_exact(sock, length)
 
 
+def resync_after_timeout(conn, remaining):
+    """A DoS attest timed out while the CA was still computing its quote for
+    the nonce we already sent. The CA will finish and send its full response,
+    then block waiting for a verdict. To keep the nonce<->response stream
+    aligned for the REST of the sweep we must: (a) swallow the part of that
+    in-flight response we didn't read, and (b) send a throwaway verdict so the
+    CA unblocks and goes back to waiting for the next nonce.
+
+    Uses a generous timeout so the slow quote has time to arrive. Raises
+    ConnectionError if the CA can't be drained cleanly (truly gone/stuck), so
+    the caller falls back to stopping the level rather than desyncing.
+    """
+    orig = conn.gettimeout()
+    try:
+        conn.settimeout(max(10.0, (orig or 1.0) * 10))
+        for _ in range(remaining):
+            recv_msg(conn)                      # drain the late response
+        send_msg(conn, b"TIMEOUT/LOST")         # release the CA's recv-verdict
+    except Exception as e:                       # any failure -> give up cleanly
+        raise ConnectionError(f"lost sync after timeout ({e})")
+    finally:
+        conn.settimeout(orig)
+
+
 # ----------------------------------------- reading TPM structures
 class Reader:
     def __init__(self, data):
@@ -166,17 +199,29 @@ def sig_to_der(blob):
 
 
 # ----------------------------------------------------------- checking
-def attest(conn, state_file, enroll):
-    """Send nonce, then check the quote + IMA log the attester returns."""
+def attest(conn, state_file, enroll, dos=False):
+    """Send nonce, then check the quote + IMA log the attester returns.
+
+    dos=True: if the CA's response does not arrive within the socket timeout,
+    re-sync the stream and raise AttestTimeout so the sweep can mark this one
+    denied and continue (instead of tearing the connection down).
+    """
     nonce = secrets.token_bytes(32)
     send_msg(conn, CMD_ATTEST + bytes([len(nonce)]) + nonce)
     print(f"  sent nonce {nonce.hex()[:16]}...")
 
-    ak_blob  = recv_msg(conn)
-    quote    = recv_msg(conn)
-    sig      = recv_msg(conn)
-    pcr_blob = recv_msg(conn)
-    ima_log  = recv_msg(conn)
+    # Receive the CA's response messages. Reading them in a counted loop lets
+    # us know how many are still in flight if a DoS attest times out.
+    parts = []
+    try:
+        while len(parts) < N_RESPONSE_MSGS:
+            parts.append(recv_msg(conn))
+    except socket.timeout:
+        if not dos:
+            raise                                   # benchmark/enroll: unchanged
+        resync_after_timeout(conn, N_RESPONSE_MSGS - len(parts))
+        raise AttestTimeout()
+    ak_blob, quote, sig, pcr_blob, ima_log = parts
 
     if len(pcr_blob) != NUM_PCRS * 32:
         return "FAIL: wrong number of PCR values"
@@ -314,7 +359,7 @@ def serve(conn, args, vw, vf):
     """
     Handle one CA connection.
     Returns True to reconnect (benchmark: CA finished a run) or None to stop
-    the verifier (enroll done, DoS run done, denial, or quit).
+    the verifier (enroll done, DoS run done, hard disconnect, or quit).
     """
     while True:
         if args.enroll:
@@ -330,13 +375,23 @@ def serve(conn, args, vw, vf):
                 continue
 
         try:
-            result = attest(conn, args.state, cmd == "enroll")
+            result = attest(conn, args.state, cmd == "enroll", dos=args.dos)
             send_msg(conn, result.encode())
             print(f"  -> {result}")
+        except AttestTimeout:
+            # DoS: one attest was too slow, but the CA is alive and the stream
+            # has been re-synced. Record THIS one as denied and keep sweeping.
+            print("  -> denied: timed out (continuing)")
+            log_verdict(vw, vf, args.done, "TIMEOUT/LOST", args.load_level)
+            args.done += 1
+            if args.count and args.done >= args.count:
+                print(f"  done: {args.done} attests")
+                return None
+            continue
         except (ConnectionError, OSError) as e:
             if args.dos:
-                # Timeout/drop under load: this attest and every remaining one
-                # count as denied. Stop the run (no reconnect = no hang).
+                # Hard disconnect (CA closed/crashed), or re-sync gave up: we
+                # can't continue this level, so the rest counts as denied.
                 print(f"  -> denied: {e}")
                 while args.done < args.count:
                     log_verdict(vw, vf, args.done, "TIMEOUT/LOST", args.load_level)
