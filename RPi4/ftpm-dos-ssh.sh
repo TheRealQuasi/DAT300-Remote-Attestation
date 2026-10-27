@@ -32,7 +32,7 @@ fi
 IP=${IP:-127.0.0.1}
 PORT=${PORT:-5000}
 
-TCTI=${TCTI:-device:/dev/tpmrm1}
+TCTI=${TCTI:-device:$DEVICE}
 AK_CTX=${AK_CTX:-/tmp/ftpm-dos-ak.ctx}
 
 # ------------------------- Run the DoS ------------------------------------------------------------
